@@ -13,7 +13,7 @@
 // #define CPPHTTPLIB_OPENSSL_SUPPORT
 // #include "httplib.h"
 #include "json.hpp"
-
+#include "Clock.h"
 using namespace nlohmann;
 
 namespace Impl
@@ -109,6 +109,20 @@ private:
 
         return true;
     }
+
+    void HouseKeeping()
+    {
+        while(1)
+        {
+            if(addingCard && cardAddingClock.GetTime() > 300)
+            {
+                addingCard = false;
+            }
+
+            MakeQuery(houseKeepingConnection, "DELETE FROM tokens WHERE validUntil < NOW()");
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }
     
     int64_t GetTokenValidTime(const std::string& tokenString);
     bool ValidateToken(const std::string& tokenString);
@@ -117,6 +131,10 @@ private:
     void AddToken(const std::string& username, const std::string& tokenString, int validForDays = 1);
     void AddAdmin(const std::string& username, const std::string& password);
     bool AuthenticateWithPassword(const std::string& username, const std::string& password);
+    bool AdminExists(const std::string& username);
+    std::string GetTokenUser(const std::string& token);
+    void ChangeUserPasswordWithToken(const std::string& token, const std::string& newPass);
+    json GetCardsList();
 
     template<typename T, typename ... Args>
     std::unique_ptr<sql::ResultSet> MakeQuery(const std::string& queryString, const T& first, const Args& ... args)
@@ -150,7 +168,7 @@ private:
         return std::unique_ptr<sql::ResultSet>(query->executeQuery());
     }
 
-    void DeleteQuery(const std::string& username)
+    void DeleteUser(const std::string& username)
     {
         MakeQuery("DELETE FROM users WHERE name=?", username);
     }
@@ -161,9 +179,9 @@ private:
         return result->rowsCount() > 0;
     }
 
-    void AddUser(const std::string& username, const std::string& cardID)
+    void AddUser(const std::string& username, const std::string& cardname)
     {
-        MakeQuery("INSERT INTO users (name, cardID) VALUES (?, ?)", username, std::stoi(cardID));
+        MakeQuery("INSERT INTO users (name, cardName, active) VALUES (?, ?, 1)", username, cardname);
     }
 
     void PrintResult(sql::ResultSet* result)
@@ -178,8 +196,10 @@ private:
     }
 
 private:
-    sql::Connection* connection;
+    sql::Connection* connection, *houseKeepingConnection;
     sql::Driver* driver;
+    Clock cardAddingClock;
+    std::thread houseKeepingThread;
 
     /// Card add mode
     bool addingCard = false;

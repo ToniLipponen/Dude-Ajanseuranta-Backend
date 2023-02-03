@@ -27,11 +27,13 @@ inline sql::bytes HashToken(const std::string& token)
 
 std::string GenerateToken()
 {
+    static std::string possibleLetters = {"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"};
+
     std::string token;
 
     for(int i = 0; i < 64; i++)
     {
-        token.push_back(Math::Random<char>(32, 126));
+        token.push_back(possibleLetters.at(Math::Random<size_t>(0, possibleLetters.length()-1)));
     }
 
     return token;

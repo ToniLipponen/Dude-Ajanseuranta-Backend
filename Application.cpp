@@ -50,20 +50,8 @@ std::string log(const httplib::Request &req, const httplib::Response &res) {
   return s;
 }
 
-
 int Application::Run()
 {
-    //// Hashing
-    // const unsigned char data[] = "data to hash";
-    // unsigned char hash[SHA512_DIGEST_LENGTH];
-    // SHA512(data, sizeof(data) - 1, hash);
-    // std::cout << data << " " << hash << std::endl;
-
-    //// Json parsing
-    // json data = json::parse(R"({"name": "somename", "cardID": 1234})");
-    // auto name = data.at("name");
-    // std::cout << name << std::endl;
-
     // Get driver instance 
     driver = sql::mariadb::get_driver_instance();
 
@@ -75,10 +63,11 @@ int Application::Run()
 
     // Make connection to the database
     // TODO: Take properties from ENV
-    sql::SQLString url("jdbc:mariadb://localhost:3306/mydb");
+    sql::SQLString url("jdbc:mariadb://localhost:3306/DudeWorktimeManagement");
     sql::Properties properties({{"user", "toni"}, {"password", "toni"}});
 
     connection = driver->connect(url, properties);
+    houseKeepingConnection = driver->connect(url, properties);
 
     if(!connection)
     {
@@ -86,22 +75,39 @@ int Application::Run()
         return 2;
     }
 
+    MakeQuery("CREATE TABLE IF NOT EXISTS admins ("
+            "id INT NOT NULL AUTO_INCREMENT, "
+            "name VARCHAR(64), "
+            "passwd BINARY(64), "
+            "salt VARCHAR(64), PRIMARY KEY(id))");
+
+    MakeQuery("CREATE TABLE IF NOT EXISTS users ("
+            "id INT NOT NULL AUTO_INCREMENT, "
+            "name VARCHAR(64), "
+            "cardName VARCHAR(64), "
+            "active INT, PRIMARY KEY(id))");
+
+    MakeQuery("CREATE TABLE IF NOT EXISTS cards ("
+            "id INT NOT NULL AUTO_INCREMENT, "
+            "name VARCHAR(64), "
+            "cardID INT, PRIMARY KEY(id))");
+
+    MakeQuery("CREATE TABLE IF NOT EXISTS times ("
+            "id INT NOT NULL AUTO_INCREMENT, "
+            "userID INT, "
+            "beginTime TIMESTAMP, "
+            "endTime TIMESTAMP, "
+            "cardID INT, PRIMARY KEY(id))");
+
+    MakeQuery("CREATE TABLE IF NOT EXISTS tokens ("
+            "adminName VARCHAR(64),"
+            "hash BINARY(64), "
+            "validUntil TIMESTAMP)");
+
     this->Get("/times", [&](const httplib::Request& request, httplib::Response& response)
     {
         std::string token;
         json data;
-
-        // try 
-        // {
-        //     data = json::parse(request.body);
-        // }
-        // catch(std::exception e)
-        // {
-        //     response.status = 400;
-        //     return;
-        // };
-
-        // token = data.at("session-token");
 
         try 
         {
@@ -135,16 +141,23 @@ int Application::Run()
 
     this->Post("/add", [&](const httplib::Request& request, httplib::Response& response)
     {
-        json data = json::parse(request.body);
-        std::string cardName = data.at("cardName");
-        int uid = data.at("uid");
-        
-        if(MakeQuery("SELECT * FROM cards WHERE cardName=?", cardName)->rowsCount() > 0)
+        if(addingCard)
         {
-            MakeQuery<std::string, int>("INSERT INTO cards (cardName, cardID) VALUES (?, ?)", cardName, uid);
+            json data = json::parse(request.body);
+            std::string cardName = "DUDE" + std::to_string(Math::Random(1, 9999));
+            int uid = data.at("uid");
+            
+            if(MakeQuery("SELECT * FROM cards WHERE name=?", cardName)->rowsCount() <= 0)
+            {
+                MakeQuery<std::string, int>("INSERT INTO cards (name, cardID) VALUES (?, ?)", cardName, uid);
 
-            PrintResult(MakeQuery("SELECT * FROM cards").get());
-            response.status = 200;
+                PrintResult(MakeQuery("SELECT * FROM cards").get());
+            }
+            else
+            {
+                response.status = 420;
+                return;
+            }
         }
     });
 
@@ -157,6 +170,7 @@ int Application::Run()
         if(MakeQuery("SELECT * FROM cards WHERE cardID=?", uid)->rowsCount() == 0)
         {
             response.status = 420;
+            return;
         }
         else
         {
@@ -178,7 +192,7 @@ int Application::Run()
         }
         catch(std::exception e)
         {
-            response.status = 403;
+            response.status = 400;
             return;
         }
 
@@ -196,18 +210,14 @@ int Application::Run()
 
     this->Post("/logout", [&](const httplib::Request& request, httplib::Response& response)
     {
-        json data;
-        std::string username, password;
-        bool remember = 0;
+        /// This might throw, but I don't care. 
+        /// Httplib is going to catch it and log it anyway.
+        /// This is not an issue.
         response.set_header("Access-Control-Allow-Origin", "*");
 
-        if(!ValidateRequest(request, response, data))
-        {
-            return;
-        }
+        json data = json::parse(request.body);
 
         std::string token = data.at("token");
-
         RemoveToken(token);
     });
 
@@ -239,11 +249,116 @@ int Application::Run()
         }
 
         auto token = GenerateToken();
-        AddToken(username, token, (remember ? 30 : 1));
+        AddToken(username, token, (remember ? 604800 : 30));
         response.body = json({{"token", token}}).dump();
     });
 
+    this->Post("/changepassword", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        json data;
+        
+        if(!ValidateRequest(request, response, data))
+        {
+            return;
+        }
+
+        if(data.find("newpass") == data.end())
+        {
+            response.status = 400; // Bad request
+            return;
+        }
+
+        std::string newPassword = data.at("newpass");
+        std::string token = data.at("token");
+
+        try
+        {
+            ChangeUserPasswordWithToken(token, newPassword);
+        }
+        catch(std::exception& e)
+        {
+            response.status = 500;
+            response.body = json({{"error_message", e.what()}}).dump();
+            return;
+        }
+    });
+
+    this->Post("/getcardlist", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        response.set_header("Access-Control-Allow-Origin", "*");
+        json data;
+        
+        if(!ValidateRequest(request, response, data))
+        {
+            return;
+        }
+
+        auto cards = GetCardsList();
+
+        response.body = cards.dump();
+    });
+
+    this->Post("/setcardreadingmode", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        json data;
+
+        if(!ValidateRequest(request, response, data))
+        {
+            return;
+        }
+
+        int state = 0;
+
+        try
+        {
+            state = data.at("state");
+        }
+        catch(std::exception& e)
+        {
+            response.body = json({{"error_message", e.what()}});
+            response.status = 400;
+            return;
+        }
+
+        addingCard = state > 0;
+
+        if(addingCard)
+        {
+            cardAddingClock.Reset();
+        }
+    });
+
+    this->Post("/user/add", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        json data;
+
+        if(!ValidateRequest(request, response, data))
+        {
+            return;
+        }
+
+        std::string username, cardname;
+
+        try
+        {
+            username = data.at("username");
+            cardname = data.at("cardname");
+        }
+        catch(std::exception& e)
+        {
+            response.status = 400;
+            response.body = json({{"error_message", e.what()}}).dump();
+            return;
+        }
+
+        AddUser(username, cardname);
+    });
+
     std::cout << "Connected to database" << std::endl;
+
+    AddAdmin("admin", "admin");
+    houseKeepingThread = std::thread([&](){ HouseKeeping();});
+    houseKeepingThread.detach();
 
     this->set_logger([&](const httplib::Request &req, const httplib::Response &res) {
         printf("%s", log(req, res).c_str());
@@ -260,7 +375,7 @@ int Application::Run()
 int64_t Application::GetTokenValidTime(const std::string& tokenString)
 {
     auto bytes = HashToken(tokenString);
-    auto result = MakeQuery("SELECT TIMESTAMPDIFF(second, validUntil, NOW()) as validSeconds WHERE hash = ?", bytes);
+    auto result = MakeQuery("SELECT TIMESTAMPDIFF(second, NOW(), validUntil) as validSeconds FROM tokens WHERE hash = ?", bytes);
 
     if(result && result->rowsCount())
     {
@@ -290,29 +405,27 @@ void Application::RemoveToken(const std::string& token)
 
 void Application::AddToken(const std::string& user, const std::string& token, int validSeconds)
 {
-    auto idResult = MakeQuery("SELECT id FROM admins WHERE name = ?", user);
-    
-    if(!idResult || idResult->rowsCount() == 0)
-    {
-        throw std::runtime_error("Invalid user");
-    }
-
-    idResult->next();
-
-    auto id = idResult->getInt("id");
     auto tokenHash = HashToken(token);
 
-    MakeQuery("INSERT INTO tokens (adminId, hash, validUntil) " 
-        "VALUES (?,?,TIMESTAMPADD(second, ?, NOW()))", id, tokenHash, validSeconds);
+    MakeQuery("INSERT INTO tokens (adminName, hash, validUntil) " 
+        "VALUES (?,?,TIMESTAMPADD(second, ?, NOW()))", user, tokenHash, validSeconds);
 }
 
 void Application::AddAdmin(const std::string& username, const std::string& password)
 {
-    auto salt = GenerateToken();
-    auto passwordHash = HashPassword(password, salt);
+    if(!AdminExists(username))
+    {
+        auto salt = GenerateToken();
+        auto passwordHash = HashPassword(password, salt);
 
-    // Todo make sure there are no duplicate users
-    MakeQuery("INSERT INTO admins (name, passwd, salt) VALUES (?, ?, ?)", username, passwordHash, salt);
+        // Todo make sure there are no duplicate users
+        MakeQuery(
+            "INSERT INTO admins (name, passwd, salt) " 
+            "VALUES (?, ?, ?) ",
+            username, 
+            passwordHash, 
+            salt);
+    }
 }
 
 bool Application::AuthenticateWithPassword(const std::string& username, const std::string& password)
@@ -327,4 +440,63 @@ bool Application::AuthenticateWithPassword(const std::string& username, const st
     " FROM admins WHERE name=? AND passwd=?", username, passwordHash);
 
     return (idResult && idResult->rowsCount() > 0);
+}
+
+void Application::ChangeUserPasswordWithToken(const std::string& token, const std::string& newPass)
+{
+    auto username = GetTokenUser(token);
+    auto newSalt = GenerateToken();
+    auto passwdHash = HashPassword(newPass, newSalt);
+    MakeQuery("UPDATE admins SET passwd = ?, salt = ? WHERE name = ?", passwdHash, newSalt, username);
+}
+
+json Application::GetCardsList()
+{
+    auto res = MakeQuery("SELECT C.id as cardID, C.name as cardName, U.name as assignedTo FROM cards as C LEFT JOIN users as U on U.active = 1");
+
+    if(!res || res->rowsCount() == 0)
+    {
+        // throw std::runtime_error("Invalid request");
+        return {};
+    }
+
+    json data = json::array();
+    
+    while(res->next())
+    {
+        std::string cardname    = res->getString("cardName").c_str();
+        int32_t cardid          = res->getInt("cardID");
+        std::string assignedTo  = res->getString("assignedTo").c_str();
+
+        data.push_back({
+            {"cardname",    cardname},
+            {"cardid",      cardid},
+            {"assingedto",  assignedTo}});
+    }
+
+    // std::cout << data.dump() << std::endl;
+
+    return data;
+}
+
+
+std::string Application::GetTokenUser(const std::string& token)
+{
+    auto tokenHash = HashToken(token);
+    auto res = MakeQuery("SELECT adminName FROM tokens WHERE hash = ?", tokenHash);
+
+    if(!res || res->rowsCount() == 0)
+    {
+        return {};
+    }
+
+    res->next();
+    return res->getString("adminName").c_str();
+}
+
+bool Application::AdminExists(const std::string& username)
+{
+    auto result = MakeQuery("SELECT id FROM admins WHERE name = ?", username);
+
+    return (result && result->rowsCount());
 }

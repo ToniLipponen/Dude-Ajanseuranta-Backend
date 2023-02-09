@@ -1,5 +1,6 @@
 #include "Application.h"
 #include "Crypt.h"
+
 std::string dump_headers(const httplib::Headers &headers) {
   std::string s;
   char buf[BUFSIZ];
@@ -84,7 +85,8 @@ int Application::Run()
     MakeQuery("CREATE TABLE IF NOT EXISTS users ("
             "id INT NOT NULL AUTO_INCREMENT, "
             "name VARCHAR(64), "
-            "cardName VARCHAR(64), "
+            "cardName VARCHAR(64), " 
+            "present INT DEFAULT 0, "
             "active INT, PRIMARY KEY(id))");
 
     MakeQuery("CREATE TABLE IF NOT EXISTS cards ("
@@ -139,42 +141,37 @@ int Application::Run()
         }
     });
 
-    this->Post("/add", [&](const httplib::Request& request, httplib::Response& response)
+    /// Pounch in/out 
+    this->Post("/card/read", [&](const httplib::Request& request, httplib::Response& response)
     {
-        if(addingCard)
+        int uid = 0;
+        try
         {
             json data = json::parse(request.body);
-            std::string cardName = "DUDE" + std::to_string(Math::Random(1, 9999));
-            int uid = data.at("uid");
-            
-            if(MakeQuery("SELECT * FROM cards WHERE name=?", cardName)->rowsCount() <= 0)
-            {
-                MakeQuery<std::string, int>("INSERT INTO cards (name, cardID) VALUES (?, ?)", cardName, uid);
+            uid = data.at("uid");
+        }
+        catch(std::exception& e)
+        {
+            response.status = 419;
+            return;
+        }
 
-                PrintResult(MakeQuery("SELECT * FROM cards").get());
-            }
-            else
+        if(addingCard)
+        {
+            if(AddCard(uid) != 0)
             {
                 response.status = 420;
+                response.body = json({{"error_message", "Card already exists"}}).dump();
                 return;
             }
         }
-    });
-
-    /// Pounch in/out 
-    this->Post("/test", [&](const httplib::Request& request, httplib::Response& response)
-    {
-        json data = json::parse(request.body);
-        int uid = data.at("uid");
-
-        if(MakeQuery("SELECT * FROM cards WHERE cardID=?", uid)->rowsCount() == 0)
-        {
-            response.status = 420;
-            return;
-        }
         else
         {
-            response.status = 200; // OK
+            if(PounchCard(uid) != 0)
+            {
+                response.status = 421;
+                return;
+            }
         }
     });
 
@@ -283,7 +280,7 @@ int Application::Run()
         }
     });
 
-    this->Post("/getcardlist", [&](const httplib::Request& request, httplib::Response& response)
+    this->Post("/card/get", [&](const httplib::Request& request, httplib::Response& response)
     {
         response.set_header("Access-Control-Allow-Origin", "*");
         json data;
@@ -298,8 +295,10 @@ int Application::Run()
         response.body = cards.dump();
     });
 
-    this->Post("/setcardreadingmode", [&](const httplib::Request& request, httplib::Response& response)
+    this->Post("/card/readingmode/(.*?)", [&](const httplib::Request& request, httplib::Response& response)
     {
+        const std::string state = request.matches[1];
+        response.set_header("Access-Control-Allow-Origin", "*");
         json data;
 
         if(!ValidateRequest(request, response, data))
@@ -307,20 +306,8 @@ int Application::Run()
             return;
         }
 
-        int state = 0;
-
-        try
-        {
-            state = data.at("state");
-        }
-        catch(std::exception& e)
-        {
-            response.body = json({{"error_message", e.what()}});
-            response.status = 400;
-            return;
-        }
-
-        addingCard = state > 0;
+        addingCard = (state == "start");
+        std::cout << "Adding mode: " << addingCard << std::endl; 
 
         if(addingCard)
         {
@@ -331,6 +318,7 @@ int Application::Run()
     this->Post("/user/add", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
+        response.set_header("Access-Control-Allow-Origin", "*");
 
         if(!ValidateRequest(request, response, data))
         {
@@ -354,6 +342,146 @@ int Application::Run()
         AddUser(username, cardname);
     });
 
+    this->Post("/user/updatecard", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        json data;
+        response.set_header("Access-Control-Allow-Origin", "*");
+
+        if(!ValidateRequest(request, response, data))
+        {
+            return;
+        }
+
+        std::string cardname;
+        int userID = 0;
+
+        try
+        {
+            userID = data.at("userid");
+            cardname = data.at("cardname");
+        }
+        catch(std::exception& e)
+        {
+            response.status = 400;
+            response.body = json({{"error_message", e.what()}}).dump();
+            return;
+        }
+
+        UpdateUser(userID, cardname);
+    });
+
+    this->Post("/user/get", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        json data;
+        response.set_header("Access-Control-Allow-Origin", "*");
+
+        if(!ValidateRequest(request, response, data))
+        {
+            return;
+        }
+
+        auto result = GetUsersData();
+        response.body = result.dump();
+    });
+
+    this->Post("/user/remove", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        json data;
+        response.set_header("Access-Control-Allow-Origin", "*");
+
+        if(!ValidateRequest(request, response, data))
+        {
+            return;
+        }
+
+        /// TODO: Check if id exists
+        int id = data.at("id");
+
+        RemoveUser(id);
+    });
+
+    this->Post("/card/remove", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        json data;
+        response.set_header("Access-Control-Allow-Origin", "*");
+
+        if(!ValidateRequest(request, response, data))
+        {
+            return;
+        }
+
+        int id;
+        
+        try
+        {
+            id = data.at("id");
+            RemoveCard(id);
+        }
+        catch(std::exception& e)
+        {
+            response.status = 400;
+            response.body = json({{"error_message", e.what()}});
+            return;
+        }
+    });
+
+    this->Post("/card/rename", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        response.set_header("Access-Control-Allow-Origin", "*");
+
+        const auto token = get_header_value(request.headers, "token");
+        const auto cardID = get_header_value(request.headers, "cardid");
+        const auto cardname = get_header_value(request.headers, "cardname");
+
+        puts("Hello from rename");
+        if(!token || !cardID || !cardname)
+        {
+            response.status = 400;
+            return;
+        }
+
+        if(!ValidateToken(token))
+        {
+            response.status = 403;
+            return; 
+        }
+
+        int cardIDInt = std::stoi(cardID);
+
+        RenameCard(cardIDInt, cardname);
+    });
+
+    this->Post("/user/setactive", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        int userID, isActive;
+        const std::string token = request.get_header_value("token");
+
+        if(token.empty())
+        {
+            response.status = 400; /// Missing token
+            return;
+        }
+
+        if(!ValidateToken(token))
+        {
+            response.status = 403; /// Authentication failed
+            return;
+        }
+
+        SetUserActive(userID, isActive);
+    });
+
+    this->Post("/api/v1/user/setpresent", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        const std::string token = request.get_header_value("token");
+    });
+
+    this->Options("(.*?)", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        response.set_header("Access-Control-Allow-Headers", "*");
+        response.set_header("Access-Control-Allow-Origin", "*");
+    });
+
     std::cout << "Connected to database" << std::endl;
 
     AddAdmin("admin", "admin");
@@ -364,7 +492,7 @@ int Application::Run()
         printf("%s", log(req, res).c_str());
     });
 
-    if(!this->listen("0.0.0.0", 8081))
+    if(!this->listen("0.0.0.0", 8082))
     {
         std::cerr << "Failed to listen\n";
     }
@@ -452,7 +580,7 @@ void Application::ChangeUserPasswordWithToken(const std::string& token, const st
 
 json Application::GetCardsList()
 {
-    auto res = MakeQuery("SELECT C.id as cardID, C.name as cardName, U.name as assignedTo FROM cards as C LEFT JOIN users as U on U.active = 1");
+    auto res = MakeQuery("SELECT C.id as cardID, C.name as cardName, U.name as assignedTo FROM cards as C LEFT JOIN users as U on C.name = U.cardName");
 
     if(!res || res->rowsCount() == 0)
     {
@@ -479,6 +607,111 @@ json Application::GetCardsList()
     return data;
 }
 
+json Application::GetUsersData()
+{
+    auto res = MakeQuery("SELECT * FROM users");
+
+    if(!res || res->rowsCount() == 0)
+    {
+        // throw std::runtime_error("Invalid request");
+        return {};
+    }
+
+    json data = json::array();
+
+    while(res->next())
+    {
+        int32_t id              = res->getInt("id");
+        std::string name        = res->getString("name").c_str();
+        std::string cardname    = res->getString("cardName").c_str();
+        int32_t active          = res->getInt("active");
+        int32_t present         = res->getInt("present");
+
+        data.push_back({
+            {"id",    id},
+            {"cardname",    cardname},
+            {"name",        name},
+            {"present",     present},
+            {"active",      active}});
+    }
+
+    return data;
+}
+
+
+/// TODO: Check if user exists
+
+int Application::RemoveUser(int id)
+{
+    MakeQuery("DELETE FROM users WHERE id=?", id);
+
+    return 0;
+}
+
+int Application::RemoveCard(int id)
+{
+    MakeQuery("DELETE FROM cards WHERE id=?", id);
+
+    return 0;
+}
+
+int Application::RenameCard(int cardID, const std::string& cardname)
+{
+    MakeQuery("UPDATE cards SET name = ? WHERE id = ?", cardname, cardID);
+
+    return 0;
+}
+
+int Application::PounchCard(int cardID)
+{
+    auto result = MakeQuery("SELECT name FROM cards WHERE cardID=?", cardID);
+
+    if(result->rowsCount() == 0)
+    {
+        return 1;
+    }
+    else
+    {
+        result->next();
+        std::string cardname = result->getString("name").c_str();
+        auto nameResult = MakeQuery("SELECT name FROM users WHERE cardName=?", cardname);
+
+        if(!nameResult || nameResult->rowsCount() == 0)
+        {
+            std::cout << "This card has not been assigned to anyone\n";
+            return 2;
+        }
+
+        nameResult->next();
+        auto username = nameResult->getString("name").c_str();
+        std::cout << "Card assigned to: " << username << std::endl;
+
+        /// Add pouch in/out logic here
+    }
+
+    return 0;
+}
+
+int Application::AddCard(int cardID)
+{
+    if(MakeQuery("SELECT * FROM cards WHERE cardID=?", cardID)->rowsCount() == 0)
+    {
+        MakeQuery("INSERT INTO cards (name, cardID) VALUES (?, ?)", "Unnamed card" + std::to_string(cardID), cardID);
+    }
+    else
+    {
+        return 1;
+    }
+    
+    return 0;
+}
+
+int Application::SetUserActive(int userID, int isActive)
+{
+    MakeQuery("UPDATE users SET active = ? WHERE id = ?", static_cast<int>(isActive > 0), userID);
+
+    return 0;
+}
 
 std::string Application::GetTokenUser(const std::string& token)
 {

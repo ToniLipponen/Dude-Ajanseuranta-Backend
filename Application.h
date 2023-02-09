@@ -135,6 +135,13 @@ private:
     std::string GetTokenUser(const std::string& token);
     void ChangeUserPasswordWithToken(const std::string& token, const std::string& newPass);
     json GetCardsList();
+    json GetUsersData();
+    int RemoveUser(int id);
+    int RemoveCard(int id);
+    int RenameCard(int cardID, const std::string& cardname);
+    int PounchCard(int cardID);
+    int AddCard(int cardID);
+    int SetUserActive(int userID, int isActive);
 
     template<typename T, typename ... Args>
     std::unique_ptr<sql::ResultSet> MakeQuery(const std::string& queryString, const T& first, const Args& ... args)
@@ -173,26 +180,58 @@ private:
         MakeQuery("DELETE FROM users WHERE name=?", username);
     }
 
+    bool CardExists(const std::string& cardname)
+    {
+        const auto result = MakeQuery("SELECT * FROM cards WHERE name=? LIMIT 1", cardname);
+
+        return result->rowsCount() > 0;
+    }
+
     bool UserExists(const std::string& username)
     {
-        const auto result = MakeQuery("SELECT * FROM users WHERE name=?", username);
+        const auto result = MakeQuery("SELECT * FROM users WHERE name=? LIMIT 1", username);
         return result->rowsCount() > 0;
     }
 
     void AddUser(const std::string& username, const std::string& cardname)
     {
+        if(!cardname.empty() && !CardExists(cardname))
+        {
+            throw std::runtime_error("Card doesn't exist");
+        }
+
         MakeQuery("INSERT INTO users (name, cardName, active) VALUES (?, ?, 1)", username, cardname);
     }
 
-    void PrintResult(sql::ResultSet* result)
+    int32_t GetCardUserID(const std::string& cardname)
     {
-        while(result->next())
-        {
-            auto nameStr = result->getString("name");
-            auto cardIDStr = result->getString("cardID");
+        auto result = MakeQuery("SELECT id FROM users WHERE cardName=? LIMIT 1", cardname);
 
-            std::cout << nameStr << " " << cardIDStr << std::endl;
+        if(result && result->rowsCount())
+        {
+            result->next();
+
+            return result->getInt("id");
         }
+
+        return 0;
+    }
+
+    void UpdateUser(int userID, const std::string& cardname)
+    {
+        if(!cardname.empty() && !CardExists(cardname))
+        {
+            throw std::runtime_error("Card doesn't exist");
+        }
+
+        int32_t previousUserID = GetCardUserID(cardname);
+
+        if(!cardname.empty() && previousUserID)
+        {
+            UpdateUser(previousUserID, "");
+        }
+
+        MakeQuery("UPDATE users SET cardName = ? WHERE id = ?", cardname, userID);
     }
 
 private:

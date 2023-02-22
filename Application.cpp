@@ -258,7 +258,7 @@ int Application::Run()
 
         auto token = GenerateToken();
         AddToken(username, token, (remember ? 604800 : 30));
-        response.set_header("Set-Cookie", "token=" + token + " ;SameSite=None");
+        response.set_header("Set-Cookie", "token=" + token + " ;SameSite=None; Secure");
     });
 
     this->Post("/api/v1/changepassword", [&](const httplib::Request& request, httplib::Response& response)

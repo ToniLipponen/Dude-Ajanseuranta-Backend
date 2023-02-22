@@ -1,5 +1,8 @@
 #include "Application.h"
 #include "Crypt.h"
+#include "Util.h"
+#include "Config.h"
+#include <csv.hpp>
 
 std::string dump_headers(const httplib::Headers &headers) {
   std::string s;
@@ -85,7 +88,7 @@ int Application::Run()
     MakeQuery("CREATE TABLE IF NOT EXISTS users ("
             "id INT NOT NULL AUTO_INCREMENT, "
             "name VARCHAR(64), "
-            "cardName VARCHAR(64), " 
+            "cardID INT, " 
             "present INT DEFAULT 0, "
             "active INT, PRIMARY KEY(id))");
 
@@ -95,54 +98,70 @@ int Application::Run()
             "cardID INT, PRIMARY KEY(id))");
 
     MakeQuery("CREATE TABLE IF NOT EXISTS times ("
-            "id INT NOT NULL AUTO_INCREMENT, "
-            "userID INT, "
-            "beginTime TIMESTAMP, "
-            "endTime TIMESTAMP, "
-            "cardID INT, PRIMARY KEY(id))");
+            "id INT NOT NULL AUTO_INCREMENT," 
+            "userID int, "
+            "beginTime DATETIME DEFAULT CURRENT_TIMESTAMP(), "
+            "endTime DATETIME, "
+            "forgotLogout INT DEFAULT 0,"
+            "PRIMARY KEY(id))");
 
     MakeQuery("CREATE TABLE IF NOT EXISTS tokens ("
             "adminName VARCHAR(64),"
             "hash BINARY(64), "
             "validUntil TIMESTAMP)");
 
-    this->Get("/times", [&](const httplib::Request& request, httplib::Response& response)
+    // Todo match int, this is userID
+    this->Get("/api/v1/user/times/(.*?)", [&](const httplib::Request& request, httplib::Response& response)
     {
         std::string token;
         json data;
-
-        try 
-        {
-            data = json::parse(request.body);
-        }
-        catch(std::exception e)
-        {
-            response.status = 400;
+        
+        if(!ValidateRequest(request, response, token, data))
             return;
-        }
 
         if(ValidateToken(token))
-        {   
-            response.set_header("Access-Control-Allow-Origin", "*");
+        {
 
-            response.set_content(
-                R"(
-                {
-                    "some-field": "some-value"
-                })",
-                "application/json"
-            );
+            /*
+                SELECT *
+                FROM example
+                ORDER BY example_date ASC;
+            */
 
-            response.status = 200;
+            std::string userIDString = request.matches[1];
+            int userID = std::stoi(userIDString);
+
+            auto res = MakeQuery("SELECT "
+            "UNIX_TIMESTAMP(beginTime) as ubeginTime, " 
+            "UNIX_TIMESTAMP(endTime) as uendTime "
+            "FROM  times WHERE userID = ? "
+            "ORDER BY beginTime DESC", userID);
+            json rdata = json::array();
+
+            while(res->next())
+            {
+                int beginTime = res->getInt("ubeginTime");
+                int endTime = res->getInt("uendTime");
+
+                rdata.push_back({{"begin_time", beginTime}, {"end_time", endTime}});
+            }
+
+            response.body = rdata.dump();
         }
         else
         {
             response.status = 401; /// Unauthorized
+            return;
         }
     });
 
-    /// Pounch in/out 
-    this->Post("/card/read", [&](const httplib::Request& request, httplib::Response& response)
+    /// Pounch in/out
+    // TODO: Respond pounch in / pounch out with different message.
+    
+    /**
+     * {pounch_in: 1}
+     * */ 
+    this->Post("/api/v1/card/read", [&](const httplib::Request& request, httplib::Response& response)
     {
         int uid = 0;
         try
@@ -153,6 +172,7 @@ int Application::Run()
         catch(std::exception& e)
         {
             response.status = 419;
+            response.body = json({{"error_message", "Failed to parse json"}}).dump();
             return;
         }
 
@@ -170,32 +190,19 @@ int Application::Run()
             if(PounchCard(uid) != 0)
             {
                 response.status = 421;
+                response.body = json({{"error_message", "Card doesn't exist"}}).dump();
                 return;
             }
         }
     });
 
-    this->Post("/validate", [&](const httplib::Request& request, httplib::Response& response)
+    this->Post("/api/v1/validate", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
         std::string token;
-        response.set_header("Access-Control-Allow-Origin", "*");
-
-        try
+        
+        if(!ValidateRequest(request, response, token, data))
         {
-            data = json::parse(request.body);
-
-            token = data.at("token");
-        }
-        catch(std::exception e)
-        {
-            response.status = 400;
-            return;
-        }
-
-        if(!ValidateToken(token))
-        {
-            response.status = 401;
             return;
         }
 
@@ -205,25 +212,29 @@ int Application::Run()
         response.body = responseData.dump();
     });
 
-    this->Post("/logout", [&](const httplib::Request& request, httplib::Response& response)
+    this->Post("/api/v1/logout", [&](const httplib::Request& request, httplib::Response& response)
     {
         /// This might throw, but I don't care. 
-        /// Httplib is going to catch it and log it anyway.
+        /// Httplib is going to catch and log it anyway.
         /// This is not an issue.
-        response.set_header("Access-Control-Allow-Origin", "*");
 
-        json data = json::parse(request.body);
+        auto 🍪  = "Cookie";
+        auto token = GetTokenFromString(request.get_header_value(🍪));
 
-        std::string token = data.at("token");
-        RemoveToken(token);
+        if(!token)
+        {
+            response.status = 400;
+            return;
+        }
+
+        RemoveToken(*token);
     });
 
-    this->Post("/login", [&](const httplib::Request& request, httplib::Response& response)
+    this->Post("/api/v1/login", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
         std::string username, password;
         bool remember = 0;
-        response.set_header("Access-Control-Allow-Origin", "*");
 
         try {
             data = json::parse(request.body);
@@ -247,30 +258,35 @@ int Application::Run()
 
         auto token = GenerateToken();
         AddToken(username, token, (remember ? 604800 : 30));
-        response.body = json({{"token", token}}).dump();
+        response.set_header("Set-Cookie", "token=" + token + " ;SameSite=None");
     });
 
-    this->Post("/changepassword", [&](const httplib::Request& request, httplib::Response& response)
+    this->Post("/api/v1/changepassword", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
+        std::string token;
         
-        if(!ValidateRequest(request, response, data))
+        if(!ValidateRequest(request, response, token, data))
         {
             return;
         }
 
-        if(data.find("newpass") == data.end())
+        std::string currentPass, newPass;
+        try
         {
-            response.status = 400; // Bad request
+            newPass = data.at("newpass");
+            currentPass = data.at("currentpass");
+        }
+        catch(std::exception& e)
+        {
+            response.status = 400;
+            response.body = json({{"error_message", e.what()}}).dump();
             return;
         }
-
-        std::string newPassword = data.at("newpass");
-        std::string token = data.at("token");
 
         try
         {
-            ChangeUserPasswordWithToken(token, newPassword);
+            ChangeUserPasswordWithToken(token, newPass);
         }
         catch(std::exception& e)
         {
@@ -280,12 +296,12 @@ int Application::Run()
         }
     });
 
-    this->Post("/card/get", [&](const httplib::Request& request, httplib::Response& response)
+    this->Get("/api/v1/card/get", [&](const httplib::Request& request, httplib::Response& response)
     {
-        response.set_header("Access-Control-Allow-Origin", "*");
         json data;
+        std::string token;
         
-        if(!ValidateRequest(request, response, data))
+        if(!ValidateRequest(request, response, token, data))
         {
             return;
         }
@@ -293,15 +309,16 @@ int Application::Run()
         auto cards = GetCardsList();
 
         response.body = cards.dump();
+        std::cout << response.body << std::endl;
     });
 
-    this->Post("/card/readingmode/(.*?)", [&](const httplib::Request& request, httplib::Response& response)
+    this->Post("/api/v1/card/readingmode/(.*?)", [&](const httplib::Request& request, httplib::Response& response)
     {
         const std::string state = request.matches[1];
-        response.set_header("Access-Control-Allow-Origin", "*");
         json data;
+        std::string token;
 
-        if(!ValidateRequest(request, response, data))
+        if(!ValidateRequest(request, response, token, data))
         {
             return;
         }
@@ -315,12 +332,12 @@ int Application::Run()
         }
     });
 
-    this->Post("/user/add", [&](const httplib::Request& request, httplib::Response& response)
+    this->Post("/api/v1/user/add", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
-        response.set_header("Access-Control-Allow-Origin", "*");
+        std::string token;
 
-        if(!ValidateRequest(request, response, data))
+        if(!ValidateRequest(request, response, token, data))
         {
             return;
         }
@@ -330,7 +347,7 @@ int Application::Run()
         try
         {
             username = data.at("username");
-            cardname = data.at("cardname");
+            // cardname = data.at("cardname");
         }
         catch(std::exception& e)
         {
@@ -342,12 +359,12 @@ int Application::Run()
         AddUser(username, cardname);
     });
 
-    this->Post("/user/updatecard", [&](const httplib::Request& request, httplib::Response& response)
+    this->Post("/api/v1/user/updatecard", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
-        response.set_header("Access-Control-Allow-Origin", "*");
+        std::string token;
 
-        if(!ValidateRequest(request, response, data))
+        if(!ValidateRequest(request, response, token, data))
         {
             return;
         }
@@ -370,26 +387,126 @@ int Application::Run()
         UpdateUser(userID, cardname);
     });
 
-    this->Post("/user/get", [&](const httplib::Request& request, httplib::Response& response)
+    this->Get("/api/v1/users/get", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
-        response.set_header("Access-Control-Allow-Origin", "*");
+        std::string token;
 
-        if(!ValidateRequest(request, response, data))
+        if(!ValidateRequest(request, response, token, data))
         {
             return;
         }
 
         auto result = GetUsersData();
+        if(result.empty())
+        {
+            response.body = "{}";
+        }
+        else
+        {
+            response.body = result.dump();
+        }
+    });
+
+    this->Get("/api/v1/user/get/(.*?)", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        json data;
+        std::string token;
+
+        if(!ValidateRequest(request, response, token, data))
+        {
+            return;
+        }
+
+        std::string userIDString = request.matches[1];
+        
+        if(userIDString.empty())
+        {
+            response.status = 400;
+            response.body = json({{"error_message", "No user id in path"}}).dump();
+            return;
+        }
+
+        auto result = GetUsersData(std::stoi(userIDString));
+
+        if(result.empty())
+        {
+            response.body = "{}";
+        }
+        else
+        {
+            response.body = result.dump();
+        }
+    });
+
+    this->Get("/api/v1/admins/get", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        json data;
+        std::string token;
+
+        if(!ValidateRequest(request, response, token, data))
+        {
+            return;
+        }
+
+        auto result = GetAdminsData();
+
+        if(result.empty())
+        {
+            response.body = "{}";
+        }
+        else
+        {
+            response.body = result.dump();
+        }
+    });
+
+    this->Get("/api/v1/admin/get/(.*?)", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        json data;
+        std::string token;
+
+        if(!ValidateRequest(request, response, token, data))
+        {
+            return;
+        }
+
+        std::string adminIDString = request.matches[1];
+        
+        if(adminIDString.empty())
+        {
+            response.status = 400;
+            response.body = json({{"error_message", "No user id in path"}}).dump();
+            return;
+        }
+
+        auto result = GetAdminsData(std::stoi(adminIDString));
         response.body = result.dump();
     });
 
-    this->Post("/user/remove", [&](const httplib::Request& request, httplib::Response& response)
+    this->Post("/api/v1/admin/add", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
-        response.set_header("Access-Control-Allow-Origin", "*");
+        std::string token;
 
-        if(!ValidateRequest(request, response, data))
+        if(!ValidateRequest(request, response, token, data))
+        {
+            return;
+        }
+
+        // TODO: Put these in a try catch block, and return a specific error if fails
+        std::string username = data.at("username");
+        std::string password = data.at("password");
+
+        AddAdmin(username, password);
+    });
+
+    this->Post("/api/v1/user/remove", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        json data;
+        std::string token;
+
+        if(!ValidateRequest(request, response, token, data))
         {
             return;
         }
@@ -400,12 +517,12 @@ int Application::Run()
         RemoveUser(id);
     });
 
-    this->Post("/card/remove", [&](const httplib::Request& request, httplib::Response& response)
+    this->Post("/api/v1/card/remove", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
-        response.set_header("Access-Control-Allow-Origin", "*");
+        std::string token;
 
-        if(!ValidateRequest(request, response, data))
+        if(!ValidateRequest(request, response, token, data))
         {
             return;
         }
@@ -425,25 +542,28 @@ int Application::Run()
         }
     });
 
-    this->Post("/card/rename", [&](const httplib::Request& request, httplib::Response& response)
+    this->Post("/api/v1/card/rename", [&](const httplib::Request& request, httplib::Response& response)
     {
-        response.set_header("Access-Control-Allow-Origin", "*");
+        std::string token;
+        json data;
 
-        const auto token = get_header_value(request.headers, "token");
-        const auto cardID = get_header_value(request.headers, "cardid");
-        const auto cardname = get_header_value(request.headers, "cardname");
-
-        puts("Hello from rename");
-        if(!token || !cardID || !cardname)
+        if(!ValidateRequest(request, response, token, data))
         {
-            response.status = 400;
             return;
         }
-
-        if(!ValidateToken(token))
+        
+        std::string cardID;
+        std::string cardname;
+        
+        try
         {
-            response.status = 403;
-            return; 
+            cardID = data.at("cardid");
+            cardname = data.at("cardname");
+        }
+        catch(std::exception& e)
+        {
+            response.status = 400;
+            response.body = json({{"error_message", e.what()}});
         }
 
         int cardIDInt = std::stoi(cardID);
@@ -451,20 +571,14 @@ int Application::Run()
         RenameCard(cardIDInt, cardname);
     });
 
-    this->Post("/user/setactive", [&](const httplib::Request& request, httplib::Response& response)
+    this->Post("/api/v1/user/setactive", [&](const httplib::Request& request, httplib::Response& response)
     {
         int userID, isActive;
-        const std::string token = request.get_header_value("token");
+        std::string token;
+        json data;
 
-        if(token.empty())
+        if(!ValidateRequest(request, response, token, data))
         {
-            response.status = 400; /// Missing token
-            return;
-        }
-
-        if(!ValidateToken(token))
-        {
-            response.status = 403; /// Authentication failed
             return;
         }
 
@@ -476,17 +590,77 @@ int Application::Run()
         const std::string token = request.get_header_value("token");
     });
 
-    this->Options("(.*?)", [&](const httplib::Request& request, httplib::Response& response)
+    this->Get("/api/v1/user/gettimescsv/(.*?)", [&](const httplib::Request& request, httplib::Response& response)
     {
-        response.set_header("Access-Control-Allow-Headers", "*");
-        response.set_header("Access-Control-Allow-Origin", "*");
+        std::string token;
+        json data;
+        
+        if(!ValidateRequest(request, response, token, data))
+            return;
+
+        if(ValidateToken(token))
+        {
+            std::string userIDString = request.matches[1];
+            int userID = std::stoi(userIDString);
+
+            auto res = MakeQuery("SELECT UNIX_TIMESTAMP(beginTime) as ubeginTime, UNIX_TIMESTAMP(endTime) as uendTime from times WHERE userID = ?", userID);
+            json rdata = json::array();
+            std::stringstream ss;
+
+            csv::DelimWriter<std::stringstream, ';', '"', true> writer(ss);
+            writer <<  std::vector<std::string>{"begin time", "end time", "hours total"};
+
+            while(res->next())
+            {
+                int beginTime = res->getInt("ubeginTime");
+                int endTime = res->getInt("uendTime");
+
+                rdata.push_back({{"begin_time", beginTime}, {"end_time", endTime}});
+            }
+
+            response.body = rdata.dump();
+        }
+        else
+        {
+            response.status = 401; /// Unauthorized
+            return;
+        }
     });
 
+    this->Options("(.*?)", [&](const httplib::Request& request, httplib::Response& response)
+    {
+        response.set_header("Access-Control-Allow-Headers", FRONT_END_ORIGIN);
+    });
+    
+    // this->Get("/stream", [&](const httplib::Request &req, httplib::Response &res) {
+    // res.set_content_provider(
+    //     "text/plain", // Content type
+    //     [&](size_t offset, httplib::DataSink &sink) {
+    //         if(cardHasBeenRead)
+    //         {
+    //             sink.write("", 1);
+    //         }
+
+    //         std::this_thread::sleep_for(std::chrono::seconds(1));
+    //         return true;
+    //     });
+    // });
+
+    this->set_base_dir("./dude-worktime-frontend/dist");
+    
     std::cout << "Connected to database" << std::endl;
 
     AddAdmin("admin", "admin");
     houseKeepingThread = std::thread([&](){ HouseKeeping();});
     houseKeepingThread.detach();
+
+    this->set_pre_routing_handler([&](const httplib::Request& req, httplib::Response& res)
+    {
+        res.set_header("Access-Control-Allow-Origin", FRONT_END_ORIGIN);
+        res.set_header("Access-Control-Allow-Credentials", FRONT_END_ALLOW_CREDENTIALS);
+        
+        return httplib::Server::HandlerResponse::Unhandled;
+    });
 
     this->set_logger([&](const httplib::Request &req, const httplib::Response &res) {
         printf("%s", log(req, res).c_str());
@@ -575,12 +749,14 @@ void Application::ChangeUserPasswordWithToken(const std::string& token, const st
     auto username = GetTokenUser(token);
     auto newSalt = GenerateToken();
     auto passwdHash = HashPassword(newPass, newSalt);
+
+    MakeQuery("DELETE FROM tokens WHERE adminName=?", username);
     MakeQuery("UPDATE admins SET passwd = ?, salt = ? WHERE name = ?", passwdHash, newSalt, username);
 }
 
 json Application::GetCardsList()
 {
-    auto res = MakeQuery("SELECT C.id as cardID, C.name as cardName, U.name as assignedTo FROM cards as C LEFT JOIN users as U on C.name = U.cardName");
+    auto res = MakeQuery("SELECT C.id as cardID, C.name as cardName, U.name as assignedTo FROM cards as C LEFT JOIN users as U on C.id = U.cardID");
 
     if(!res || res->rowsCount() == 0)
     {
@@ -602,19 +778,27 @@ json Application::GetCardsList()
             {"assingedto",  assignedTo}});
     }
 
-    // std::cout << data.dump() << std::endl;
-
     return data;
 }
 
-json Application::GetUsersData()
+json Application::GetUsersData(std::optional<int> userID)
 {
-    auto res = MakeQuery("SELECT * FROM users");
+    std::unique_ptr<sql::ResultSet> res;
 
-    if(!res || res->rowsCount() == 0)
+    if(userID)
     {
-        // throw std::runtime_error("Invalid request");
-        return {};
+        res = MakeQuery(
+            "SELECT U.id, U.name, C.name as cardName, U.active, U.present "
+            "FROM users AS U "
+            "LEFT JOIN cards as C on U.cardID = C.id "
+            "WHERE U.id = ?", *userID);
+    }
+    else
+    {
+        res = MakeQuery(
+            "SELECT U.id, U.name, C.name as cardName, U.active, U.present "
+            "FROM users AS U " 
+            "LEFT JOIN cards as C on U.cardID = C.id");
     }
 
     json data = json::array();
@@ -628,7 +812,7 @@ json Application::GetUsersData()
         int32_t present         = res->getInt("present");
 
         data.push_back({
-            {"id",    id},
+            {"id",          id},
             {"cardname",    cardname},
             {"name",        name},
             {"present",     present},
@@ -664,7 +848,7 @@ int Application::RenameCard(int cardID, const std::string& cardname)
 
 int Application::PounchCard(int cardID)
 {
-    auto result = MakeQuery("SELECT name FROM cards WHERE cardID=?", cardID);
+    auto result = MakeQuery("SELECT id FROM cards WHERE cardID=?", cardID);
 
     if(result->rowsCount() == 0)
     {
@@ -673,20 +857,30 @@ int Application::PounchCard(int cardID)
     else
     {
         result->next();
-        std::string cardname = result->getString("name").c_str();
-        auto nameResult = MakeQuery("SELECT name FROM users WHERE cardName=?", cardname);
+        int cardID = result->getInt("id");
+        auto idResult = MakeQuery("SELECT id FROM users WHERE cardID=?", cardID);
 
-        if(!nameResult || nameResult->rowsCount() == 0)
+        if(!idResult || idResult->rowsCount() == 0)
         {
             std::cout << "This card has not been assigned to anyone\n";
             return 2;
         }
 
-        nameResult->next();
-        auto username = nameResult->getString("name").c_str();
-        std::cout << "Card assigned to: " << username << std::endl;
+        idResult->next();
+        int id = idResult->getInt("id");
+        
+        if(MakeQuery("SELECT * FROM times WHERE endTime IS NULL AND userID = ?", id)->rowsCount())
+        {
+            MakeQuery("UPDATE times " 
+	                "SET endTime = CURRENT_TIMESTAMP()"
+                    "WHERE endTime IS null AND userID = ?;", id);
+        }
+        else
+        {
+            MakeQuery("INSERT INTO times (userID) values(?)", id);
+        }
 
-        /// Add pouch in/out logic here
+        MakeQuery("UPDATE users SET present = !present WHERE id = ?", id);
     }
 
     return 0;
@@ -732,4 +926,38 @@ bool Application::AdminExists(const std::string& username)
     auto result = MakeQuery("SELECT id FROM admins WHERE name = ?", username);
 
     return (result && result->rowsCount());
+}
+
+json Application::GetAdminsData(std::optional<int> adminID)
+{
+    std::unique_ptr<sql::ResultSet> res;
+
+    if(adminID)
+    {
+        res = MakeQuery(
+            "SELECT * "
+            "FROM admins " 
+            "WHERE id = ? ", 
+            *adminID);
+    }
+    else
+    {   
+        res = MakeQuery(
+            "SELECT * "
+            "FROM admins");
+    }
+    
+    json data = json::array();
+
+    while(res->next())
+    {
+        int32_t id          = res->getInt("id");
+        std::string name    = res->getString("name").c_str();
+
+        data.push_back({
+            {"id",  id},
+            {"name",name}});
+    }
+
+    return data;
 }

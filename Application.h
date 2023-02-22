@@ -1,69 +1,14 @@
-/**
- * {
- *      "session-token": "some-random-sequence-of-characters-and-numbers",
- * }
- */
-
 #pragma once
 #include <mariadb/conncpp.hpp>
 #include <iostream>
 #include <type_traits>
 #include <httplib.h>
 
-// #define CPPHTTPLIB_OPENSSL_SUPPORT
-// #include "httplib.h"
 #include "json.hpp"
 #include "Clock.h"
+#include "Util.h"
+#include "Housekeeping.h"
 using namespace nlohmann;
-
-namespace Impl
-{
-    inline void AppendToQuery(sql::PreparedStatement* query, int index, int32_t data)
-    {
-        query->setInt(index, data);
-    }
-
-    inline void AppendToQuery(sql::PreparedStatement* query, int index, int64_t data)
-    {
-        query->setInt64(index, data);
-    }
-
-    inline void AppendToQuery(sql::PreparedStatement* query, int index, float data)
-    {
-        query->setFloat(index, data);
-    }
-
-    inline void AppendToQuery(sql::PreparedStatement* query, int index, double data)
-    {
-        query->setDouble(index, data);
-    }
-
-    inline void AppendToQuery(sql::PreparedStatement* query, int index, const std::string& data)
-    {
-        query->setString(index, data);
-    }
-
-    inline void AppendToQuery(sql::PreparedStatement* query, int index, const sql::bytes& data)
-    {
-        auto nonConst = const_cast<sql::bytes&>(data); // sus
-        query->setBytes(index, &nonConst);
-    }
-
-    inline void AppendToQuery(sql::PreparedStatement* query, int index) { }
-}
-
-template<typename Arg>
-inline void AppendToQuery(sql::PreparedStatement* query, int index, const Arg& arg)
-{
-    Impl::AppendToQuery(query, index, arg);
-}
-
-template<typename FirstArg, typename ... Args>
-inline void AppendToQuery(sql::PreparedStatement* query, int index, const FirstArg& first, const Args& ... args)
-{
-    Impl::AppendToQuery(query, index, first);
-    AppendToQuery(query, ++index, args...);
-}
 
 class Application : httplib::Server
 {
@@ -73,76 +18,105 @@ public:
     int Run();
 
 private:
-    inline bool ValidateRequest(const httplib::Request& request, httplib::Response& response, json& data)
+    // Checks if a request contains a session token, and checks if the token is valid or not.
+    inline bool ValidateRequest(const httplib::Request& request, httplib::Response& response, std::string& token, json& data)
     {
-        std::string token;
+        auto rtoken = GetTokenFromString(request.get_header_value("Cookie"));
+
+        if(!rtoken)
+        {
+            response.status = 401;
+            response.body = "{\"error_message\": \"Request does not contain a session token\"}";
+            return false;
+        }
 
         try {
             data = json::parse(request.body);
         }
-        catch(std::exception e)
-        {
-            std::cout << "Request body does not contain valid json\n";
-            response.status = 400;
-            response.body = "{\"error_message\": \"Request body does not contain valid json\"}";
-            return false;
-        }
+        catch(std::exception e) {}
 
-        if(data.find("token") == data.end())
+        if(!ValidateToken(*rtoken))
         {
-            std::cout << "Request does not contain a session token\n";
-            response.status = 400;
-            response.body = "{\"error_message\": \"Request does not contain a session token\"}";
-            return false;
-        }
-        
-        token = data.at("token");
-
-        if(!ValidateToken(token))
-        {
-            std::cout << "Authentication failed\n";
             response.status = 401;
             response.body = "{\"error_message\": \"Authentication failed\"}";
 
             return false;
         }
+        
+        token = *rtoken;
 
         return true;
     }
 
+    // TODO: At the end of the day if user has not pounched out, do that automatically.
     void HouseKeeping()
     {
         while(1)
         {
-            if(addingCard && cardAddingClock.GetTime() > 300)
+            if(addingCard && cardAddingClock.GetTime() > 180)
             {
                 addingCard = false;
             }
 
-            MakeQuery(houseKeepingConnection, "DELETE FROM tokens WHERE validUntil < NOW()");
+            Housekeeping::RemoveExpiredTokens(houseKeepingConnection);
+            Housekeeping::AutoStopClock(houseKeepingConnection);
+
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
     }
-    
+
+    // Returns how long a token is still valid (in seconds)    
     int64_t GetTokenValidTime(const std::string& tokenString);
+
+    // Checks if a token is valid or not
     bool ValidateToken(const std::string& tokenString);
-    bool AuthenticateWithToken(const std::string& tokenString);
+
+    // Removes token from the database. This will cause the token user to log out.    
     void RemoveToken(const std::string& token);
-    void AddToken(const std::string& username, const std::string& tokenString, int validForDays = 1);
+
+    // Adds new token associated with username that is valid for validForSeconds amount of time.
+    void AddToken(const std::string& username, const std::string& tokenString, int validSeconds = 1800);
+
+    // Adds a new admin user
     void AddAdmin(const std::string& username, const std::string& password);
+
+    // Authenticates a user using username and password
     bool AuthenticateWithPassword(const std::string& username, const std::string& password);
+
+    // Checks if an admin exists with this name
     bool AdminExists(const std::string& username);
+
+    // Selects all admins info and returns it as json
+    json GetAdminsData(std::optional<int> adminID = std::nullopt);
+
+    // Gets the username associated with this token
     std::string GetTokenUser(const std::string& token);
+
+    // Changes password of whoever is using this token
     void ChangeUserPasswordWithToken(const std::string& token, const std::string& newPass);
+
+    // Selects all cards from the database and puts it in a json array
     json GetCardsList();
-    json GetUsersData();
+
+    // Selects all users (not admin) from the database and puts it in a json array
+    // Or if userID has been passed as an argument, just returns the information of the user that matches this id
+    json GetUsersData(std::optional<int> userID = std::nullopt);
+
+    // Removes user from the database using database row id
     int RemoveUser(int id);
+
+    // Removes card from the database using database row id
     int RemoveCard(int id);
+
     int RenameCard(int cardID, const std::string& cardname);
     int PounchCard(int cardID);
     int AddCard(int cardID);
+
+    // Changes user active status to isActive, where isActive is either 0 or 1
     int SetUserActive(int userID, int isActive);
 
+    // Creates and calls a new sql prepared statement, returning a unique_ptr to the result
+    // Using variadic templates to take a variable amount of arguments here.
     template<typename T, typename ... Args>
     std::unique_ptr<sql::ResultSet> MakeQuery(const std::string& queryString, const T& first, const Args& ... args)
     {
@@ -152,6 +126,7 @@ private:
         return std::unique_ptr<sql::ResultSet>(query->executeQuery());
     }
     
+    // Creates and calls a new sql prepared statement, returning a unique_ptr to the result
     std::unique_ptr<sql::ResultSet> MakeQuery(const std::string& queryString)
     {
         std::unique_ptr<sql::PreparedStatement> query(connection->prepareStatement(queryString));
@@ -159,21 +134,6 @@ private:
         return std::unique_ptr<sql::ResultSet>(query->executeQuery());
     }
 
-    template<typename T, typename ... Args>
-    std::unique_ptr<sql::ResultSet> MakeQuery(sql::Connection* conn, const std::string& queryString, const T& first, const Args& ... args)
-    {
-        std::unique_ptr<sql::PreparedStatement> query(conn->prepareStatement(queryString));
-        AppendToQuery<T, Args...>(query.get(), 1, first, args...);
-
-        return std::unique_ptr<sql::ResultSet>(query->executeQuery());
-    }
-    
-    std::unique_ptr<sql::ResultSet> MakeQuery(sql::Connection* conn, const std::string& queryString)
-    {
-        std::unique_ptr<sql::PreparedStatement> query(conn->prepareStatement(queryString));
-
-        return std::unique_ptr<sql::ResultSet>(query->executeQuery());
-    }
 
     void DeleteUser(const std::string& username)
     {
@@ -182,9 +142,7 @@ private:
 
     bool CardExists(const std::string& cardname)
     {
-        const auto result = MakeQuery("SELECT * FROM cards WHERE name=? LIMIT 1", cardname);
-
-        return result->rowsCount() > 0;
+        return GetCardID(cardname).has_value();
     }
 
     bool UserExists(const std::string& username)
@@ -193,19 +151,26 @@ private:
         return result->rowsCount() > 0;
     }
 
-    void AddUser(const std::string& username, const std::string& cardname)
+    std::optional<int> GetCardID(const std::string& cardname)
     {
-        if(!cardname.empty() && !CardExists(cardname))
+        auto res = MakeQuery("SELECT id FROM cards WHERE name = ?", cardname);
+
+        while(res->next())
         {
-            throw std::runtime_error("Card doesn't exist");
+            return res->getInt("id");
         }
 
-        MakeQuery("INSERT INTO users (name, cardName, active) VALUES (?, ?, 1)", username, cardname);
+        return std::nullopt;
+    }
+
+    void AddUser(const std::string& username, const std::string& cardname)
+    {
+        MakeQuery("INSERT IGNORE INTO users (name, active) VALUES (?, 1)", username);
     }
 
     int32_t GetCardUserID(const std::string& cardname)
     {
-        auto result = MakeQuery("SELECT id FROM users WHERE cardName=? LIMIT 1", cardname);
+        auto result = MakeQuery("SELECT U.id FROM users AS U WHERE U.cardID = (SELECT C.id FROM cards AS C WHERE C.name = ?) LIMIT 1", cardname);
 
         if(result && result->rowsCount())
         {
@@ -231,7 +196,9 @@ private:
             UpdateUser(previousUserID, "");
         }
 
-        MakeQuery("UPDATE users SET cardName = ? WHERE id = ?", cardname, userID);
+        auto cardID = GetCardID(cardname);
+
+        MakeQuery("UPDATE users SET cardID = ? WHERE id = ?", *cardID, userID);
     }
 
 private:

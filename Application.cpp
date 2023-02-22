@@ -196,7 +196,7 @@ int Application::Run()
         }
     });
 
-    this->Post("/api/v1/validate", [&](const httplib::Request& request, httplib::Response& response)
+    this->Get("/api/v1/validate", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
         std::string token;
@@ -631,22 +631,13 @@ int Application::Run()
     {
         response.set_header("Access-Control-Allow-Headers", FRONT_END_ORIGIN);
     });
-    
-    // this->Get("/stream", [&](const httplib::Request &req, httplib::Response &res) {
-    // res.set_content_provider(
-    //     "text/plain", // Content type
-    //     [&](size_t offset, httplib::DataSink &sink) {
-    //         if(cardHasBeenRead)
-    //         {
-    //             sink.write("", 1);
-    //         }
-
-    //         std::this_thread::sleep_for(std::chrono::seconds(1));
-    //         return true;
-    //     });
-    // });
 
     this->set_base_dir("./dude-worktime-frontend/dist");
+    this->set_mount_point("/login", "/login");
+    this->set_mount_point("/admin", "/admin");
+    this->set_mount_point("/cards", "/cards");
+    this->set_mount_point("/user", "/user");
+    this->set_mount_point("/users", "/users");
     
     std::cout << "Connected to database" << std::endl;
 

@@ -25,7 +25,7 @@ inline sql::bytes HashToken(const std::string& token)
     return bytes;
 }
 
-std::string GenerateToken()
+inline std::string GenerateToken()
 {
     static std::string possibleLetters = {"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"};
 

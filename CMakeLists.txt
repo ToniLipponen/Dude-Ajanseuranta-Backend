@@ -6,7 +6,8 @@ add_subdirectory(external/csv-parser)
 
 add_executable(
     app 
-    main.cpp 
+    main.cpp
+    Routes.cpp
     Housekeeping.cpp
     Application.cpp
     Application.h 

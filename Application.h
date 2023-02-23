@@ -13,10 +13,7 @@ using namespace nlohmann;
 class Application : httplib::Server
 {
 public:
-    Application() = default;
-    virtual ~Application() = default;
-    int Run();
-
+    Application();
 private:
     // Checks if a request contains a session token, and checks if the token is valid or not.
     inline bool ValidateRequest(const httplib::Request& request, httplib::Response& response, std::string& token, json& data)
@@ -33,7 +30,7 @@ private:
         try {
             data = json::parse(request.body);
         }
-        catch(std::exception e) {}
+        catch(...) {}
 
         if(!ValidateToken(*rtoken))
         {
@@ -48,10 +45,9 @@ private:
         return true;
     }
 
-    // TODO: At the end of the day if user has not pounched out, do that automatically.
-    void HouseKeeping()
+    [[noreturn]] void HouseKeeping()
     {
-        while(1)
+        while(true)
         {
             if(addingCard && cardAddingClock.GetTime() > 180)
             {
@@ -64,6 +60,8 @@ private:
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
     }
+
+    void SetRoutes();
 
     // Returns how long a token is still valid (in seconds)    
     int64_t GetTokenValidTime(const std::string& tokenString);

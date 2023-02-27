@@ -27,3 +27,9 @@ Running
 ``` 
 ./build/app 
 ```
+
+## TODO
+- [ ] Lock mutex when using sql::Connection
+- [ ] Refactor everything
+- [ ] Split code into smaller files
+- [ ] Write documentation

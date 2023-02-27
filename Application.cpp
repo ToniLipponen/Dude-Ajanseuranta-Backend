@@ -14,10 +14,9 @@ Application::Application()
         throw std::runtime_error("Failed to get sql driver instance");
     }
 
-    // Make connection to the database
-    // TODO: Take properties from ENV
-    sql::SQLString url("jdbc:mariadb://localhost:3306/testing");
-    sql::Properties properties({{"user", "toni"}, {"password", "Isolihis"}});
+    /// TODO: Put these in Config.h
+    sql::SQLString url("jdbc:mariadb://localhost:3306/DudeWorktimeManagement");
+    sql::Properties properties({{"user", "toni"}, {"password", "toni"}});
 
     connection = driver->connect(url, properties);
     houseKeepingConnection = driver->connect(url, properties);
@@ -48,7 +47,7 @@ Application::Application()
     MakeQuery("CREATE TABLE IF NOT EXISTS times ("
               "id INT NOT NULL AUTO_INCREMENT,"
               "userID int, "
-              "beginTime DATETIME DEFAULT CURRENT_TIMESTAMP(), "
+              "beginTime DATETIME DEFAULT CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+02:00'), "
               "endTime DATETIME, "
               "forgotLogout INT DEFAULT 0,"
               "PRIMARY KEY(id))");
@@ -58,12 +57,14 @@ Application::Application()
               "hash BINARY(64), "
               "validUntil TIMESTAMP)");
 
-    this->set_base_dir("./dude-worktime-frontend/dist");
-    this->set_mount_point("/login", "/login");
-    this->set_mount_point("/admin", "/admin");
-    this->set_mount_point("/cards", "/cards");
-    this->set_mount_point("/user", "/user");
-    this->set_mount_point("/users", "/users");
+#if defined(FRONTEND_MOUNTPOINT)
+    this->set_base_dir(FRONTEND_MOUNTPOINT);
+
+    for(const auto& mountPoint : mountPoints)
+    {
+        this->set_mount_point(mountPoint.first, mountPoint.second);
+    }
+#endif
 
     std::cout << "Connected to database" << std::endl;
 
@@ -75,15 +76,19 @@ Application::Application()
 
     this->set_pre_routing_handler([&](const httplib::Request& req, httplib::Response& res)
     {
-        res.set_header("Access-Control-Allow-Origin", FRONT_END_ORIGIN);
-        res.set_header("Access-Control-Allow-Credentials", FRONT_END_ALLOW_CREDENTIALS);
+        for(const auto& header : headers)
+        {
+            res.set_header(header.first, header.second);
+        }
 
         return httplib::Server::HandlerResponse::Unhandled;
     });
 
+#ifndef NO_LOGGING
     this->set_logger([&](const httplib::Request &req, const httplib::Response &res) {
         printf("%s", log(req, res).c_str());
     });
+#endif
 
     if(!this->listen("0.0.0.0", 8082))
     {
@@ -295,7 +300,7 @@ int Application::PounchCard(int cardID)
         if(MakeQuery("SELECT * FROM times WHERE endTime IS NULL AND userID = ?", id)->rowsCount())
         {
             MakeQuery("UPDATE times " 
-	                "SET endTime = CURRENT_TIMESTAMP()"
+	                "SET endTime = CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+02:00') "
                     "WHERE endTime IS null AND userID = ?;", id);
         }
         else

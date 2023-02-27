@@ -15,13 +15,6 @@ void Application::SetRoutes()
 
         if(ValidateToken(token))
         {
-
-            /*
-                SELECT *
-                FROM example
-                ORDER BY example_date ASC;
-            */
-
             std::string userIDString = request.matches[1];
             int userID = std::stoi(userIDString);
 
@@ -44,7 +37,7 @@ void Application::SetRoutes()
         }
         else
         {
-            response.status = 401; /// Unauthorized
+            response.status = Http::Unauthorized;
             return;
         }
     });
@@ -61,7 +54,7 @@ void Application::SetRoutes()
         }
         catch(std::exception& e)
         {
-            response.status = 419;
+            response.status = 419; // Invalid json in request body
             response.body = json({{"error_message", "Failed to parse json"}}).dump();
             return;
         }
@@ -70,7 +63,7 @@ void Application::SetRoutes()
         {
             if(AddCard(uid) != 0)
             {
-                response.status = 420;
+                response.status = 420; // Tried to add card that already exists in the system
                 response.body = json({{"error_message", "Card already exists"}}).dump();
                 return;
             }
@@ -79,7 +72,7 @@ void Application::SetRoutes()
         {
             if(PounchCard(uid) != 0)
             {
-                response.status = 421;
+                response.status = 421; // Tried to pounch in with a card that has not been added to the system yet
                 response.body = json({{"error_message", "Card doesn't exist"}}).dump();
                 return;
             }
@@ -104,16 +97,13 @@ void Application::SetRoutes()
 
     this->Post("/api/v1/logout", [&](const httplib::Request& request, httplib::Response& response)
     {
-        /// This might throw, but I don't care.
-        /// Httplib is going to catch and log it anyway.
-        /// This is not an issue.
-
         auto 🍪  = "Cookie";
         auto token = GetTokenFromString(request.get_header_value(🍪));
 
         if(!token)
         {
-            response.status = 400;
+            // No token in cookie. Not an issue though, since we are loggin out.
+            response.status = Http::Bad_Request; 
             return;
         }
 
@@ -130,7 +120,7 @@ void Application::SetRoutes()
             data = json::parse(request.body);
         }
         catch(...) {
-            response.status = 400; // Bad request
+            response.status = Http::Bad_Request;
             response.body = "{\"error_message\": \"Failed to parse request body.\"}";
             return;
         }
@@ -141,21 +131,24 @@ void Application::SetRoutes()
             remember = data.at("remember");
         }
         catch(...) {
-            response.status = 400; // Bad request
+            // One of the above fields is missing from the request body.
+            response.status = Http::Bad_Request;
             response.body = "{\"error_message\": \"Request body did not contain valid json data.\"}";
             return;
         }
 
         if(!AuthenticateWithPassword(username, password))
         {
-            response.status = 403; // Forbidden
+            // Either password or or username is incorrect.
+            // Or this user doesn't exist
+            response.status = Http::Forbidden;
             response.body = "{\"error_message\": \"Access denied\"}";
             return;
         }
 
         auto token = GenerateToken();
         AddToken(username, token, (remember ? 604800 : 30));
-        response.set_header("Set-Cookie", "token=" + token + " ;SameSite=None; Secure");
+        response.set_header("Set-Cookie", "token=" + token + " ;SameSite=None;" FRONTEND_SECURE_POLICY);
     });
 
     this->Post("/api/v1/changepassword", [&](const httplib::Request& request, httplib::Response& response)
@@ -176,7 +169,7 @@ void Application::SetRoutes()
         }
         catch(std::exception& e)
         {
-            response.status = 400;
+            response.status = Http::Bad_Request;
             response.body = json({{"error_message", e.what()}}).dump();
             return;
         }
@@ -248,7 +241,7 @@ void Application::SetRoutes()
         }
         catch(std::exception& e)
         {
-            response.status = 400;
+            response.status = Http::Bad_Request;
             response.body = json({{"error_message", e.what()}}).dump();
             return;
         }
@@ -276,7 +269,8 @@ void Application::SetRoutes()
         }
         catch(std::exception& e)
         {
-            response.status = 400;
+            // One of the above fields are missing
+            response.status = Http::Bad_Request;
             response.body = json({{"error_message", e.what()}}).dump();
             return;
         }
@@ -295,14 +289,8 @@ void Application::SetRoutes()
         }
 
         auto result = GetUsersData();
-        if(result.empty())
-        {
-            response.body = "{}";
-        }
-        else
-        {
-            response.body = result.dump();
-        }
+
+        response.body = result.empty() ? "{}" : result.dump();
     });
 
     this->Get("/api/v1/user/get/(.*?)", [&](const httplib::Request& request, httplib::Response& response)
@@ -315,14 +303,24 @@ void Application::SetRoutes()
             return;
         }
 
-        std::string userIDString = request.matches[1];
-
-        if(userIDString.empty())
+        std::string userIDString;
+        
+        try
         {
-            response.status = 400;
+            userIDString = request.matches[1];
+            
+            if(userIDString.empty())
+            {
+                throw std::runtime_error("No user id in path");
+            }
+        }
+        catch(...)
+        {
+            response.status = Http::Bad_Request;
             response.body = json({{"error_message", "No user id in path"}}).dump();
             return;
         }
+
 
         auto result = GetUsersData(std::stoi(userIDString));
 
@@ -368,11 +366,19 @@ void Application::SetRoutes()
             return;
         }
 
-        std::string adminIDString = request.matches[1];
-
-        if(adminIDString.empty())
+        std::string adminIDString;
+        try 
         {
-            response.status = 400;
+            adminIDString = request.matches[1];
+            
+            if(adminIDString.empty())
+            {
+                throw std::runtime_error("No admin id in path");
+            }
+        }
+        catch(...)
+        {
+            response.status = Http::Bad_Request;
             response.body = json({{"error_message", "No user id in path"}}).dump();
             return;
         }
@@ -432,7 +438,7 @@ void Application::SetRoutes()
         }
         catch(std::exception& e)
         {
-            response.status = 400;
+            response.status = Http::Bad_Request;
             response.body = json({{"error_message", e.what()}});
             return;
         }
@@ -458,7 +464,7 @@ void Application::SetRoutes()
         }
         catch(std::exception& e)
         {
-            response.status = 400;
+            response.status = Http::Bad_Request;
             response.body = json({{"error_message", e.what()}});
         }
 
@@ -486,47 +492,8 @@ void Application::SetRoutes()
         const std::string token = request.get_header_value("token");
     });
 
-    this->Get("/api/v1/user/gettimescsv/(.*?)", [&](const httplib::Request& request, httplib::Response& response)
-    {
-        std::string token;
-        json data;
-
-        if(!ValidateRequest(request, response, token, data))
-            return;
-
-        if(ValidateToken(token))
-        {
-            std::string userIDString = request.matches[1];
-            int userID = std::stoi(userIDString);
-
-            auto res = MakeQuery("SELECT UNIX_TIMESTAMP(beginTime) as ubeginTime, UNIX_TIMESTAMP(endTime) as uendTime "
-                                 "FROM times WHERE userID = ?", userID);
-
-            json rdata = json::array();
-            std::stringstream ss;
-
-            csv::DelimWriter<std::stringstream, ';', '"', true> writer(ss);
-            writer <<  std::vector<std::string>{"begin time", "end time", "hours total"};
-
-            while(res->next())
-            {
-                int beginTime = res->getInt("ubeginTime");
-                int endTime = res->getInt("uendTime");
-
-                rdata.push_back({{"begin_time", beginTime}, {"end_time", endTime}});
-            }
-
-            response.body = rdata.dump();
-        }
-        else
-        {
-            response.status = 401; /// Unauthorized
-            return;
-        }
-    });
-
     this->Options("(.*?)", [&](const httplib::Request& request, httplib::Response& response)
     {
-        response.set_header("Access-Control-Allow-Headers", FRONT_END_ORIGIN);
+        response.set_header("Access-Control-Allow-Headers", headers.at("Access-Control-Allow-Origin"));
     });
 }

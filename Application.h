@@ -8,6 +8,7 @@
 #include "Clock.h"
 #include "Util.h"
 #include "Housekeeping.h"
+#include "Config.h"
 using namespace nlohmann;
 
 class Application : httplib::Server
@@ -22,7 +23,7 @@ private:
 
         if(!rtoken)
         {
-            response.status = 401;
+            response.status = Http::Unauthorized;
             response.body = "{\"error_message\": \"Request does not contain a session token\"}";
             return false;
         }
@@ -30,11 +31,11 @@ private:
         try {
             data = json::parse(request.body);
         }
-        catch(...) {}
+        catch(...){}
 
         if(!ValidateToken(*rtoken))
         {
-            response.status = 401;
+            response.status = Http::Unauthorized;
             response.body = "{\"error_message\": \"Authentication failed\"}";
 
             return false;
@@ -56,6 +57,8 @@ private:
 
             Housekeeping::RemoveExpiredTokens(houseKeepingConnection);
             Housekeeping::AutoStopClock(houseKeepingConnection);
+            Housekeeping::KeepConnectionAlive(houseKeepingConnection);
+            Housekeeping::KeepConnectionAlive(connection);
 
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
@@ -132,7 +135,6 @@ private:
         return std::unique_ptr<sql::ResultSet>(query->executeQuery());
     }
 
-
     void DeleteUser(const std::string& username)
     {
         MakeQuery("DELETE FROM users WHERE name=?", username);
@@ -204,7 +206,6 @@ private:
     sql::Driver* driver;
     Clock cardAddingClock;
     std::thread houseKeepingThread;
-
-    /// Card add mode
+    std::mutex mutex;
     bool addingCard = false;
 };

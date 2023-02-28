@@ -1,7 +1,6 @@
-#include "Application.h"
-#include "Config.h"
-#include "Crypt.h"
-#include <csv.hpp>
+#include "include/Application.h"
+#include "include/Config.h"
+#include "include/Crypt.h"
 
 void Application::SetRoutes()
 {
@@ -471,25 +470,6 @@ void Application::SetRoutes()
         int cardIDInt = std::stoi(cardID);
 
         RenameCard(cardIDInt, cardname);
-    });
-
-    this->Post("/api/v1/user/setactive", [&](const httplib::Request& request, httplib::Response& response)
-    {
-        int userID, isActive;
-        std::string token;
-        json data;
-
-        if(!ValidateRequest(request, response, token, data))
-        {
-            return;
-        }
-
-        SetUserActive(userID, isActive);
-    });
-
-    this->Post("/api/v1/user/setpresent", [&](const httplib::Request& request, httplib::Response& response)
-    {
-        const std::string token = request.get_header_value("token");
     });
 
     this->Options("(.*?)", [&](const httplib::Request& request, httplib::Response& response)

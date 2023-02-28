@@ -1,8 +1,8 @@
-#include "Application.h"
-#include "Crypt.h"
-#include "Util.h"
-#include "Logging.h"
-#include "Config.h"
+#include "include/Application.h"
+#include "include/Crypt.h"
+#include "include/Util.h"
+#include "include/Logging.h"
+#include "include/Config.h"
 
 Application::Application()
 {
@@ -374,7 +374,7 @@ json Application::GetAdminsData(std::optional<int> adminID)
             "SELECT * "
             "FROM admins");
     }
-    
+
     json data = json::array();
 
     while(res->next())

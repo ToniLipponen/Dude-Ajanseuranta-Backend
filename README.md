@@ -33,3 +33,5 @@ Running
 - [ ] Refactor everything
 - [ ] Split code into smaller files
 - [ ] Write documentation
+- [ ] sql::Properties in Config.h
+- [ ] In Application::AddAdmin() make sure admin with a given name doesn't already exist

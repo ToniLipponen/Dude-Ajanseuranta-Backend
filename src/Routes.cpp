@@ -6,46 +6,48 @@ void Application::SetRoutes()
 {
     this->Get("/api/v1/user/times/(.*?)", [&](const httplib::Request& request, httplib::Response& response)
     {
-        std::string token;
-        json data;
-
-        if(!ValidateRequest(request, response, token, data))
+        if(!ValidateRequest(request, response))
             return;
 
-        if(ValidateToken(token))
+        if(request.matches.empty())
         {
-            std::string userIDString = request.matches[1];
-            int userID = std::stoi(userIDString);
-
-            auto res = MakeQuery("SELECT "
-                                 "UNIX_TIMESTAMP(beginTime) as ubeginTime, "
-                                 "UNIX_TIMESTAMP(endTime) as uendTime "
-                                 "FROM  times WHERE userID = ? "
-                                 "ORDER BY beginTime DESC", userID);
-            json rdata = json::array();
-
-            while(res->next())
-            {
-                int beginTime = res->getInt("ubeginTime");
-                int endTime = res->getInt("uendTime");
-
-                rdata.push_back({{"begin_time", beginTime}, {"end_time", endTime}});
-            }
-
-            response.body = rdata.dump();
-        }
-        else
-        {
-            response.status = Http::Unauthorized;
+            response.status = Http::Bad_Request;
+            response.body = json({{"error_message", "No user id in path"}}).dump();
             return;
         }
+
+        std::string userIDString = request.matches[1];
+        int userID = std::stoi(userIDString);
+
+        //// Maybe put this in a separate function
+        ////--------------------------------------------------
+
+        auto res = MakeQuery("SELECT "
+                             "UNIX_TIMESTAMP(beginTime) as ubeginTime, "
+                             "UNIX_TIMESTAMP(endTime) as uendTime "
+                             "FROM  times WHERE userID = ? "
+                             "ORDER BY beginTime DESC", userID);
+
+        json data = json::array();
+
+        while(res->next())
+        {
+            int beginTime = res->getInt("ubeginTime");
+            int endTime = res->getInt("uendTime");
+
+            data.push_back({{"begin_time", beginTime}, {"end_time", endTime}});
+        }
+        ////--------------------------------------------------
+
+        response.body = data.dump();
     });
 
     /// Pounch in/out
-    // TODO: Respond pounch in / pounch out with different message.
+    /// TODO: Respond pounch in / pounch out with different message.
     this->Post("/api/v1/card/read", [&](const httplib::Request& request, httplib::Response& response)
     {
-        int uid = 0;
+        int uid;
+
         try
         {
             json data = json::parse(request.body);
@@ -80,10 +82,9 @@ void Application::SetRoutes()
 
     this->Get("/api/v1/validate", [&](const httplib::Request& request, httplib::Response& response)
     {
-        json data;
         std::string token;
 
-        if(!ValidateRequest(request, response, token, data))
+        if(!ValidateRequest(request, response, token))
         {
             return;
         }
@@ -96,12 +97,11 @@ void Application::SetRoutes()
 
     this->Post("/api/v1/logout", [&](const httplib::Request& request, httplib::Response& response)
     {
-        auto 🍪  = "Cookie";
-        auto token = GetTokenFromString(request.get_header_value(🍪));
+        auto token = GetTokenFromString(request.get_header_value("Cookie"));
 
         if(!token)
         {
-            // No token in cookie. Not an issue though, since we are loggin out.
+            // No token in cookie. Not an issue though, since we are logging out.
             response.status = Http::Bad_Request; 
             return;
         }
@@ -113,58 +113,47 @@ void Application::SetRoutes()
     {
         json data;
         std::string username, password;
-        bool remember = 0;
+        bool remember;
 
         try {
             data = json::parse(request.body);
-        }
-        catch(...) {
-            response.status = Http::Bad_Request;
-            response.body = "{\"error_message\": \"Failed to parse request body.\"}";
-            return;
-        }
-
-        try {
             username = data.at("username");
             password = data.at("password");
             remember = data.at("remember");
         }
         catch(...) {
-            // One of the above fields is missing from the request body.
             response.status = Http::Bad_Request;
-            response.body = "{\"error_message\": \"Request body did not contain valid json data.\"}";
+            response.body = R"({"error_message": "Failed to parse request body."})";
             return;
         }
 
         if(!AuthenticateWithPassword(username, password))
         {
-            // Either password or or username is incorrect.
+            // Either password or username is incorrect.
             // Or this user doesn't exist
             response.status = Http::Forbidden;
-            response.body = "{\"error_message\": \"Access denied\"}";
+            response.body = R"({"error_message": "Access denied"})";
             return;
         }
 
         auto token = GenerateToken();
-        AddToken(username, token, (remember ? 604800 : 30));
+        AddToken(username, token, (remember ? 604800 : 3600));
         response.set_header("Set-Cookie", "token=" + token + " ;SameSite=None;" FRONTEND_SECURE_POLICY);
     });
 
     this->Post("/api/v1/changepassword", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
-        std::string token;
+        std::string token, newPass;
 
         if(!ValidateRequest(request, response, token, data))
         {
             return;
         }
 
-        std::string currentPass, newPass;
         try
         {
             newPass = data.at("newpass");
-            currentPass = data.at("currentpass");
         }
         catch(std::exception& e)
         {
@@ -173,24 +162,12 @@ void Application::SetRoutes()
             return;
         }
 
-        try
-        {
-            ChangeUserPasswordWithToken(token, newPass);
-        }
-        catch(std::exception& e)
-        {
-            response.status = 500;
-            response.body = json({{"error_message", e.what()}}).dump();
-            return;
-        }
+        ChangeUserPasswordWithToken(token, newPass);
     });
 
     this->Get("/api/v1/card/get", [&](const httplib::Request& request, httplib::Response& response)
     {
-        json data;
-        std::string token;
-
-        if(!ValidateRequest(request, response, token, data))
+        if(!ValidateRequest(request, response))
         {
             return;
         }
@@ -198,22 +175,18 @@ void Application::SetRoutes()
         auto cards = GetCardsList();
 
         response.body = cards.dump();
-        std::cout << response.body << std::endl;
     });
 
     this->Post("/api/v1/card/readingmode/(.*?)", [&](const httplib::Request& request, httplib::Response& response)
     {
         const std::string state = request.matches[1];
-        json data;
-        std::string token;
 
-        if(!ValidateRequest(request, response, token, data))
+        if(!ValidateRequest(request, response))
         {
             return;
         }
 
         addingCard = (state == "start");
-        std::cout << "Adding mode: " << addingCard << std::endl;
 
         if(addingCard)
         {
@@ -224,19 +197,16 @@ void Application::SetRoutes()
     this->Post("/api/v1/user/add", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
-        std::string token;
+        std::string username;
 
-        if(!ValidateRequest(request, response, token, data))
+        if(!ValidateRequest(request, response, data))
         {
             return;
         }
 
-        std::string username, cardname;
-
         try
         {
             username = data.at("username");
-            // cardname = data.at("cardname");
         }
         catch(std::exception& e)
         {
@@ -245,21 +215,20 @@ void Application::SetRoutes()
             return;
         }
 
-        AddUser(username, cardname);
+        AddUser(username);
     });
 
     this->Post("/api/v1/user/updatecard", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
-        std::string token;
 
-        if(!ValidateRequest(request, response, token, data))
+        if(!ValidateRequest(request, response, data))
         {
             return;
         }
 
         std::string cardname;
-        int userID = 0;
+        int userID;
 
         try
         {
@@ -279,10 +248,7 @@ void Application::SetRoutes()
 
     this->Get("/api/v1/users/get", [&](const httplib::Request& request, httplib::Response& response)
     {
-        json data;
-        std::string token;
-
-        if(!ValidateRequest(request, response, token, data))
+        if(!ValidateRequest(request, response))
         {
             return;
         }
@@ -292,34 +258,21 @@ void Application::SetRoutes()
         response.body = result.empty() ? "{}" : result.dump();
     });
 
-    this->Get("/api/v1/user/get/(.*?)", [&](const httplib::Request& request, httplib::Response& response)
+    this->Get("/api/v1/user/get/(\\d+)", [&](const httplib::Request& request, httplib::Response& response)
     {
-        json data;
-        std::string token;
-
-        if(!ValidateRequest(request, response, token, data))
+        if(!ValidateRequest(request, response))
         {
             return;
         }
 
-        std::string userIDString;
-        
-        try
-        {
-            userIDString = request.matches[1];
-            
-            if(userIDString.empty())
-            {
-                throw std::runtime_error("No user id in path");
-            }
-        }
-        catch(...)
+        if(request.matches.empty())
         {
             response.status = Http::Bad_Request;
             response.body = json({{"error_message", "No user id in path"}}).dump();
             return;
         }
 
+        std::string userIDString = request.matches[1];
 
         auto result = GetUsersData(std::stoi(userIDString));
 
@@ -335,10 +288,7 @@ void Application::SetRoutes()
 
     this->Get("/api/v1/admins/get", [&](const httplib::Request& request, httplib::Response& response)
     {
-        json data;
-        std::string token;
-
-        if(!ValidateRequest(request, response, token, data))
+        if(!ValidateRequest(request, response))
         {
             return;
         }
@@ -355,50 +305,58 @@ void Application::SetRoutes()
         }
     });
 
-    this->Get("/api/v1/admin/get/(.*?)", [&](const httplib::Request& request, httplib::Response& response)
+    this->Get("/api/v1/admin/get/(\\d+)", [&](const httplib::Request& request, httplib::Response& response)
     {
-        json data;
-        std::string token;
-
-        if(!ValidateRequest(request, response, token, data))
+        if(!ValidateRequest(request, response))
         {
             return;
         }
 
-        std::string adminIDString;
-        try 
-        {
-            adminIDString = request.matches[1];
-            
-            if(adminIDString.empty())
-            {
-                throw std::runtime_error("No admin id in path");
-            }
-        }
-        catch(...)
+        if(request.matches.empty())
         {
             response.status = Http::Bad_Request;
-            response.body = json({{"error_message", "No user id in path"}}).dump();
+            response.body = json({{"error_message", "No admin id in path"}}).dump();
             return;
         }
 
+        std::string adminIDString = request.matches[1];
+
         auto result = GetAdminsData(std::stoi(adminIDString));
-        response.body = result.dump();
+
+        if(result.empty())
+        {
+            response.body = "{}";
+        }
+        else
+        {
+            response.body = result.dump();
+        }
     });
 
     this->Post("/api/v1/admin/add", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
-        std::string token;
 
-        if(!ValidateRequest(request, response, token, data))
+        if(!ValidateRequest(request, response, data))
         {
             return;
         }
 
         // TODO: Put these in a try catch block, and return a specific error if fails
-        std::string username = data.at("username");
-        std::string password = data.at("password");
+        std::string username;
+        std::string password;
+
+        try
+        {
+            username = data.at("username");
+            password = data.at("password");
+        }
+        catch(const std::exception& e)
+        {
+            response.status = Http::Bad_Request;
+            response.body = json({{"error_message", e.what()}});
+            return;
+        }
 
         AddAdmin(username, password);
     });
@@ -406,24 +364,22 @@ void Application::SetRoutes()
     this->Post("/api/v1/user/remove", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
-        std::string token;
 
-        if(!ValidateRequest(request, response, token, data))
+        if(!ValidateRequest(request, response, data))
         {
             return;
         }
 
         int id = data.at("id");
 
-        RemoveUser(id);
+        DeleteUser(id);
     });
 
     this->Post("/api/v1/card/remove", [&](const httplib::Request& request, httplib::Response& response)
     {
         json data;
-        std::string token;
 
-        if(!ValidateRequest(request, response, token, data))
+        if(!ValidateRequest(request, response, data))
         {
             return;
         }
@@ -445,10 +401,9 @@ void Application::SetRoutes()
 
     this->Post("/api/v1/card/rename", [&](const httplib::Request& request, httplib::Response& response)
     {
-        std::string token;
         json data;
 
-        if(!ValidateRequest(request, response, token, data))
+        if(!ValidateRequest(request, response, data))
         {
             return;
         }
@@ -475,5 +430,15 @@ void Application::SetRoutes()
     this->Options("(.*?)", [&](const httplib::Request& request, httplib::Response& response)
     {
         response.set_header("Access-Control-Allow-Headers", headers.at("Access-Control-Allow-Origin"));
+    });
+
+    this->set_pre_routing_handler([&](const httplib::Request& req, httplib::Response& res)
+    {
+        for(const auto& header : headers)
+        {
+          res.set_header(header.first, header.second);
+        }
+
+        return httplib::Server::HandlerResponse::Unhandled;
     });
 }

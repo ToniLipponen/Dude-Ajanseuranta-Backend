@@ -1,8 +1,6 @@
 #include "include/Application.h"
-#include "include/Crypt.h"
 #include "include/Util.h"
 #include "include/Logging.h"
-#include "include/Config.h"
 
 Application::Application()
 {
@@ -66,23 +64,11 @@ Application::Application()
     }
 #endif
 
-    std::cout << "Connected to database" << std::endl;
-
     AddAdmin("admin", "admin");
     houseKeepingThread = std::thread([&](){ HouseKeeping();});
     houseKeepingThread.detach();
 
     SetRoutes();
-
-    this->set_pre_routing_handler([&](const httplib::Request& req, httplib::Response& res)
-    {
-        for(const auto& header : headers)
-        {
-            res.set_header(header.first, header.second);
-        }
-
-        return httplib::Server::HandlerResponse::Unhandled;
-    });
 
 #ifndef NO_LOGGING
     this->set_logger([&](const httplib::Request &req, const httplib::Response &res) {
@@ -90,302 +76,78 @@ Application::Application()
     });
 #endif
 
+    std::cout << "Server started" << std::endl;
+
     if(!this->listen("0.0.0.0", 8082))
     {
         throw std::runtime_error("Server failed to listen");
     }
 }
 
-int64_t Application::GetTokenValidTime(const std::string& tokenString)
+// Checks if a request contains a session token, and checks if the token is valid or not.
+bool Application::ValidateRequest(const httplib::Request& request, httplib::Response& response, std::string& token, json& data)
 {
-    auto bytes = HashToken(tokenString);
-    auto result = MakeQuery("SELECT TIMESTAMPDIFF(second, NOW(), validUntil) as validSeconds "
-                            "FROM tokens WHERE hash = ?", bytes);
+    auto _token = GetTokenFromString(request.get_header_value("Cookie"));
 
-    if(result && result->rowsCount())
+    if(!_token)
     {
-        result->next();
-        return std::max<int64_t>(result->getInt64("validSeconds"), 0);
+        response.status = Http::Unauthorized;
+        response.body = R"({"error_message": "Request does not contain a session token"})";
+        return false;
     }
 
-    return 0;
-}
-
-bool Application::ValidateToken(const std::string& token)
-{
-    auto bytes = HashToken(token);
-    auto result = MakeQuery("SELECT * FROM tokens WHERE hash=?", bytes);
-
-    return result->rowsCount() > 0;
-}
-
-void Application::RemoveToken(const std::string& token)
-{
-    auto tokenHash = HashToken(token);
-    MakeQuery("DELETE FROM tokens WHERE hash = ?", tokenHash);
-}
-
-void Application::AddToken(const std::string& user, const std::string& token, int validSeconds)
-{
-    auto tokenHash = HashToken(token);
-
-    MakeQuery("INSERT INTO tokens (adminName, hash, validUntil) "
-        "VALUES (?,?,TIMESTAMPADD(second, ?, NOW()))", user, tokenHash, validSeconds);
-}
-
-void Application::AddAdmin(const std::string& username, const std::string& password)
-{
-    if(!AdminExists(username))
-    {
-        auto salt = GenerateToken();
-        auto passwordHash = HashPassword(password, salt);
-
-        // Todo make sure there are no duplicate users
-        MakeQuery(
-            "INSERT INTO admins (name, passwd, salt) " 
-            "VALUES (?, ?, ?) ",
-            username, 
-            passwordHash, 
-            salt);
+    try {
+        data = json::parse(request.body);
     }
-}
+    catch(...){}
 
-bool Application::AuthenticateWithPassword(const std::string& username, const std::string& password)
-{
-    auto saltResult = MakeQuery("SELECT salt FROM admins WHERE name = ?", username);
-
-    saltResult->next();
-    std::string salt = saltResult->getString("salt").c_str();
-
-    auto passwordHash = HashPassword(password, salt);
-    auto idResult = MakeQuery("SELECT id "
-    " FROM admins WHERE name=? AND passwd=?", username, passwordHash);
-
-    return (idResult && idResult->rowsCount() > 0);
-}
-
-void Application::ChangeUserPasswordWithToken(const std::string& token, const std::string& newPass)
-{
-    auto username = GetTokenUser(token);
-    auto newSalt = GenerateToken();
-    auto passwdHash = HashPassword(newPass, newSalt);
-
-    MakeQuery("DELETE FROM tokens WHERE adminName=?", username);
-    MakeQuery("UPDATE admins SET passwd = ?, salt = ? WHERE name = ?", passwdHash, newSalt, username);
-}
-
-json Application::GetCardsList()
-{
-    auto res = MakeQuery("SELECT C.id as cardID, C.name as cardName, U.name as assignedTo "
-                         "FROM cards as C LEFT JOIN users as U on C.id = U.cardID");
-
-    if(!res || res->rowsCount() == 0)
+    if(!ValidateToken(*_token))
     {
-        // throw std::runtime_error("Invalid request");
-        return {};
+        response.status = Http::Unauthorized;
+        response.body = R"({"error_message": "Authentication failed"})";
+
+        return false;
     }
 
-    json data = json::array();
-    
-    while(res->next())
-    {
-        std::string cardname    = res->getString("cardName").c_str();
-        int32_t cardid          = res->getInt("cardID");
-        std::string assignedTo  = res->getString("assignedTo").c_str();
+    token = *_token;
 
-        data.push_back({
-            {"cardname",    cardname},
-            {"cardid",      cardid},
-            {"assingedto",  assignedTo}});
-    }
-
-    return data;
+    return true;
 }
 
-json Application::GetUsersData(std::optional<int> userID)
+bool Application::ValidateRequest(const httplib::Request& request, httplib::Response& response)
 {
-    std::unique_ptr<sql::ResultSet> res;
-
-    if(userID)
-    {
-        res = MakeQuery(
-            "SELECT U.id, U.name, C.name as cardName, U.active, U.present "
-            "FROM users AS U "
-            "LEFT JOIN cards as C on U.cardID = C.id "
-            "WHERE U.id = ?", *userID);
-    }
-    else
-    {
-        res = MakeQuery(
-            "SELECT U.id, U.name, C.name as cardName, U.active, U.present "
-            "FROM users AS U " 
-            "LEFT JOIN cards as C on U.cardID = C.id");
-    }
-
-    json data = json::array();
-
-    while(res->next())
-    {
-        int32_t id              = res->getInt("id");
-        std::string name        = res->getString("name").c_str();
-        std::string cardname    = res->getString("cardName").c_str();
-        int32_t active          = res->getInt("active");
-        int32_t present         = res->getInt("present");
-
-        data.push_back({
-            {"id",          id},
-            {"cardname",    cardname},
-            {"name",        name},
-            {"present",     present},
-            {"active",      active}});
-    }
-
-    return data;
+    json data;
+    std::string token;
+    return ValidateRequest(request, response, token, data);
 }
 
-
-/// TODO: Check if user exists
-
-int Application::RemoveUser(int id)
+bool Application::ValidateRequest(const httplib::Request& request, httplib::Response& response, std::string& token)
 {
-    try
-    {
-        MakeQuery("DELETE FROM users WHERE id=?", id);
-    }
-    catch(...)
-    {
-
-    }
-    
-    return 0;
+    json data;
+    return ValidateRequest(request, response, token, data);
 }
 
-int Application::RemoveCard(int id)
+bool Application::ValidateRequest(const httplib::Request& request, httplib::Response& response, json& data)
 {
-    MakeQuery("DELETE FROM cards WHERE id=?", id);
-
-    return 0;
+    std::string token;
+    return ValidateRequest(request, response, token, data);
 }
 
-int Application::RenameCard(int cardID, const std::string& cardname)
+[[noreturn]]
+void Application::HouseKeeping()
 {
-    MakeQuery("UPDATE cards SET name = ? WHERE id = ?", cardname, cardID);
-
-    return 0;
-}
-
-int Application::PounchCard(int cardID)
-{
-    auto result = MakeQuery("SELECT id FROM cards WHERE cardID=?", cardID);
-
-    if(result->rowsCount() == 0)
+    while(true)
     {
-        return 1;
-    }
-    else
-    {
-        result->next();
-        int cardID = result->getInt("id");
-        auto idResult = MakeQuery("SELECT id FROM users WHERE cardID=?", cardID);
-
-        if(!idResult || idResult->rowsCount() == 0)
+        if(addingCard && cardAddingClock.GetTime() > 180)
         {
-            std::cout << "This card has not been assigned to anyone\n";
-            return 2;
+            addingCard = false;
         }
 
-        idResult->next();
-        int id = idResult->getInt("id");
-        
-        if(MakeQuery("SELECT * FROM times WHERE endTime IS NULL AND userID = ?", id)->rowsCount())
-        {
-            MakeQuery("UPDATE times " 
-	                "SET endTime = CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+02:00') "
-                    "WHERE endTime IS null AND userID = ?;", id);
-        }
-        else
-        {
-            MakeQuery("INSERT INTO times (userID) values(?)", id);
-        }
+        Housekeeping::RemoveExpiredTokens(houseKeepingConnection);
+        Housekeeping::AutoStopClock(houseKeepingConnection);
+        Housekeeping::KeepConnectionAlive(houseKeepingConnection);
+        Housekeeping::KeepConnectionAlive(connection);
 
-        MakeQuery("UPDATE users SET present = !present WHERE id = ?", id);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-
-    return 0;
-}
-
-int Application::AddCard(int cardID)
-{
-    if(MakeQuery("SELECT * FROM cards WHERE cardID=?", cardID)->rowsCount() == 0)
-    {
-        MakeQuery("INSERT INTO cards (name, cardID) VALUES (?, ?)", "Unnamed card" + std::to_string(cardID), cardID);
-    }
-    else
-    {
-        return 1;
-    }
-    
-    return 0;
-}
-
-int Application::SetUserActive(int userID, int isActive)
-{
-    MakeQuery("UPDATE users SET active = ? WHERE id = ?", static_cast<int>(isActive > 0), userID);
-
-    return 0;
-}
-
-std::string Application::GetTokenUser(const std::string& token)
-{
-    auto tokenHash = HashToken(token);
-    auto res = MakeQuery("SELECT adminName FROM tokens WHERE hash = ?", tokenHash);
-
-    if(!res || res->rowsCount() == 0)
-    {
-        return {};
-    }
-
-    res->next();
-    return res->getString("adminName").c_str();
-}
-
-bool Application::AdminExists(const std::string& username)
-{
-    auto result = MakeQuery("SELECT id FROM admins WHERE name = ?", username);
-
-    return (result && result->rowsCount());
-}
-
-json Application::GetAdminsData(std::optional<int> adminID)
-{
-    std::unique_ptr<sql::ResultSet> res;
-
-    if(adminID)
-    {
-        res = MakeQuery(
-            "SELECT * "
-            "FROM admins " 
-            "WHERE id = ? ", 
-            *adminID);
-    }
-    else
-    {   
-        res = MakeQuery(
-            "SELECT * "
-            "FROM admins");
-    }
-
-    json data = json::array();
-
-    while(res->next())
-    {
-        int32_t id          = res->getInt("id");
-        std::string name    = res->getString("name").c_str();
-
-        data.push_back({
-            {"id",  id},
-            {"name",name}});
-    }
-
-    return data;
 }

@@ -1,3 +1,4 @@
+#pragma once
 #include <openssl/ssl.h>
 #include <mariadb/conncpp.hpp>
 #include "Random.h"

@@ -25,7 +25,7 @@
         {"/cards", "/cards"},
         {"/user", "/user"},
         {"/users", "/users"},
-    }
+    };
 #endif 
 
 namespace Http

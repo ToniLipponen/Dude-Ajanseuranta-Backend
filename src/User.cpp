@@ -12,12 +12,14 @@ void Application::ChangeUserPasswordWithToken(const std::string& token, const st
 
 void Application::DeleteUser(const std::string& username)
 {
+    MakeQuery("DELETE FROM times WHERE userID = (SELECT id FROM users WHERE name = ?)", username);
     MakeQuery("DELETE FROM users WHERE name=?", username);
 }
 
 void Application::DeleteUser(int id)
 {
-    MakeQuery("DELETE FROM users WHERE id=?", id);
+    MakeQuery("DELETE FROM times WHERE userID = ?", id);
+    MakeQuery("DELETE FROM users WHERE id = ?", id);
 }
 
 bool Application::UserExists(const std::string& username)

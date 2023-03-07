@@ -432,6 +432,12 @@ void Application::SetRoutes()
         response.set_header("Access-Control-Allow-Headers", headers.at("Access-Control-Allow-Origin"));
     });
 
+    this->Get("/api/v1/test", [](const httplib::Request& req, httplib::Response& res)
+    {
+        std::cout << "/api/v1/test" << std::endl;
+        res.body = "Hello world";
+    });
+
     this->set_pre_routing_handler([&](const httplib::Request& req, httplib::Response& res)
     {
         for(const auto& header : headers)

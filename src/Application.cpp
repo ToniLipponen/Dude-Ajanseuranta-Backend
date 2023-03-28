@@ -70,7 +70,7 @@ Application::Application()
 
     SetRoutes();
 
-#ifndef NO_LOGGING
+#if 0
     this->set_logger([&](const httplib::Request &req, const httplib::Response &res) {
         printf("%s", log(req, res).c_str());
     });

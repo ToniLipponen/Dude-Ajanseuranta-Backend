@@ -1,5 +1,7 @@
 #pragma once
 
+#define BUILD_STANDALONE
+
 #if !defined(BUILD_STANDALONE)
     #define FRONTEND_SECURE_POLICY ""
     inline static std::map<std::string, std::string> headers =
@@ -15,7 +17,7 @@
     inline static std::map<std::string, std::string> headers =
     {
         {"Access-Control-Allow-Credentials", "true"},
-        {"Access-Control-Allow-Origin", "https://dudeworktimemanagment.leadseason.eu"},
+        {"Access-Control-Allow-Origin", "https://dudeleimaus.xyz"},
     };
 
     inline static std::map<std::string, std::string> mountPoints = 

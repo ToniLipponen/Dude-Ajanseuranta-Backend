@@ -65,8 +65,9 @@ int Application::PounchCard(int cardID)
         const std::time_t now = std::time(nullptr); 
         std::tm time = *std::localtime(&now);
         std::stringstream tzss;
-        tzss << "'+0" << 2 + (int)(time.tm_isdst > 0) << ":00'";
-        const auto timezone = tzss.str(); 
+        tzss << "+0" << 2 + (int)(time.tm_isdst > 0) << ":00";
+        std::string timezone;
+	tzss >> timezone;
         ///-------------------------------------
 
         if(MakeQuery("SELECT * FROM times WHERE endTime IS NULL AND userID = ?", id)->rowsCount())
@@ -77,7 +78,7 @@ int Application::PounchCard(int cardID)
         }
         else
         {
-            MakeQuery("INSERT INTO times (userID, beginTIme) values(?, CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', ?))", id, timezone);
+            MakeQuery("INSERT INTO times (userID, beginTime) values(?, CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', ?))", id, timezone);
         }
 
         MakeQuery("UPDATE users SET present = !present WHERE id = ?", id);

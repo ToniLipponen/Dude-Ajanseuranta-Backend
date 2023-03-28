@@ -61,15 +61,23 @@ int Application::PounchCard(int cardID)
         idResult->next();
         int id = idResult->getInt("id");
 
+        ///---- Quick and dirty fix for dst ----
+        const std::time_t now = std::time(nullptr); 
+        std::tm time = *std::localtime(&now);
+        std::stringstream tzss;
+        tzss << "'+0" << 2 + (int)(time.tm_isdst > 0) << ":00'";
+        const auto timezone = tzss.str(); 
+        ///-------------------------------------
+
         if(MakeQuery("SELECT * FROM times WHERE endTime IS NULL AND userID = ?", id)->rowsCount())
         {
             MakeQuery("UPDATE times "
-                      "SET endTime = CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+02:00') "
-                      "WHERE endTime IS null AND userID = ?;", id);
+                      "SET endTime = CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', ?) "
+                      "WHERE endTime IS null AND userID = ?;", timezone, id);
         }
         else
         {
-            MakeQuery("INSERT INTO times (userID) values(?)", id);
+            MakeQuery("INSERT INTO times (userID, beginTIme) values(?, CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', ?))", id, timezone);
         }
 
         MakeQuery("UPDATE users SET present = !present WHERE id = ?", id);
